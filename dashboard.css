@@ -1,0 +1,22 @@
+body {
+  font-family: Arial, sans-serif;
+  padding: 20px;
+}
+
+h1, h2 {
+  text-align: center;
+}
+
+#summary p {
+  font-size: 18px;
+  margin: 5px 0;
+}
+
+#topSites {
+  list-style: none;
+  padding: 0;
+}
+
+#topSites li {
+  padding: 4px 0;
+}

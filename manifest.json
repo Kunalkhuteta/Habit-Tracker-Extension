@@ -1,0 +1,13 @@
+{
+  "manifest_version": 3,
+  "name": "Habit & Productivity Tracker",
+  "version": "0.0.1",
+  "description": "Tracks time spent on websites",
+  "permissions": ["tabs", "storage", "activeTab", "idle"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "dashboard.html"
+  }
+}

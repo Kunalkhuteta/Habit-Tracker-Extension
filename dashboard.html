@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Habit Tracker Dashboard</title>
+  <link rel="stylesheet" href="dashboard.css">
+</head>
+
+<body>
+  <h1>Habit Tracker Dashboard</h1>
+
+  <div id="summary">
+    <p>Total Time: <span id="totalTime">0</span></p>
+    <p>Learning Time: <span id="learningTime">0</span></p>
+    <p>Distraction Time: <span id="distractionTime">0</span></p>
+    <p>Development Time: <span id="developmentTime">0</span></p>
+    <p>Other Time: <span id="otherTime">0</span></p>
+  </div>
+
+  <canvas id="timeChart" width="400" height="200"></canvas>
+
+  <h2>Top Sites</h2>
+  <ul id="topSites"></ul>
+
+  <script src="chart.min.js"></script>
+  <script src="dashboard.js"></script>
+</body>
+</html>
