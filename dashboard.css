@@ -20,3 +20,43 @@ h1, h2 {
 #topSites li {
   padding: 4px 0;
 }
+body {
+  font-family: Arial, sans-serif;
+  padding: 10px;
+  width: 360px;
+}
+
+#chartContainer {
+  position: relative;
+  height: 220px;
+  margin: 10px 0;
+}
+  
+.export-section {
+  display: flex;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.export-section button {
+  flex: 1;
+  padding: 8px;
+  cursor: pointer;
+  border-radius: 6px;
+  border: none;
+  font-size: 13px;
+}
+
+#exportJsonBtn {
+  background-color: #4caf50;
+  color: white;
+}
+
+#exportCsvBtn {
+  background-color: #2196f3;
+  color: white;
+}
+
+.export-section button:hover {
+  opacity: 0.9;
+}

@@ -1,13 +1,28 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
+  <meta charset="UTF-8" />
   <title>Habit Tracker Dashboard</title>
-  <link rel="stylesheet" href="dashboard.css">
+  <link rel="stylesheet" href="dashboard.css" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 </head>
 
 <body>
-  <h1>Habit Tracker Dashboard</h1>
+  <h1>Habit Tracker Dashboard<button id="refreshBtn" style="margin:10px 0; padding:6px 10px;">
+  🔄 Refresh
+</h1>
+</button>
+
+  <select id="rangeSelect">
+  <option value="today">Today</option>
+  <option value="yesterday">Yesterday</option>
+  <option value="7days">Last 7 Days</option>
+</select>
+
+<p>
+  Productivity Score:
+  <strong><span id="productivityScore">0</span>/100</strong>
+</p>
 
   <div id="summary">
     <p>Total Time: <span id="totalTime">0</span></p>
@@ -17,12 +32,24 @@
     <p>Other Time: <span id="otherTime">0</span></p>
   </div>
 
-  <canvas id="timeChart" width="400" height="200"></canvas>
+  <!-- 🔴 WRAP CANVAS IN A CONTAINER (IMPORTANT FOR CHART.JS) -->
+  <div id="chartContainer">
+    <canvas id="timeChart"></canvas>
+  </div>
 
   <h2>Top Sites</h2>
   <ul id="topSites"></ul>
 
+  <!-- 🔴 SCRIPT ORDER IS CRITICAL -->
   <script src="chart.min.js"></script>
   <script src="dashboard.js"></script>
+
+  <h2>Export Data</h2>
+
+<div class="export-section">
+  <button id="exportJsonBtn">⬇ Export JSON</button>
+  <button id="exportCsvBtn">⬇ Export CSV</button>
+</div>
+
 </body>
 </html>

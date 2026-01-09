@@ -4,6 +4,7 @@
   "version": "0.0.1",
   "description": "Tracks time spent on websites",
   "permissions": ["tabs", "storage", "activeTab", "idle"],
+
   "background": {
     "service_worker": "background.js"
   },

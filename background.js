@@ -1,12 +1,7 @@
 let currentDomain = null;
-let startTime = null;
 let isIdle = false;
 
-// Idle detection
-chrome.idle.setDetectionInterval(60);
-chrome.idle.onStateChanged.addListener((state) => {
-  isIdle = state !== "active";
-});
+/* ================= HELPERS ================= */
 
 function getDomain(url) {
   try {
@@ -16,58 +11,77 @@ function getDomain(url) {
   }
 }
 
+function getTodayKey() {
+  return new Date().toISOString().split("T")[0];
+}
+
 function getCategory(domain) {
   if (!domain) return "Other";
-  if (domain.includes("leetcode") || domain.includes("geeksforgeeks"))
-    return "Learning";
-  if (domain.includes("youtube") || domain.includes("instagram"))
-    return "Distraction";
-  if (domain.includes("github") || domain.includes("stackoverflow"))
-    return "Development";
+  if (domain.includes("leetcode") || domain.includes("geeksforgeeks")) return "Learning";
+  if (domain.includes("youtube") || domain.includes("instagram")) return "Distraction";
+  if (domain.includes("github") || domain.includes("stackoverflow")) return "Development";
   return "Other";
 }
 
-// 🔒 SINGLE responsibility: save time
-function saveCurrentTime() {
-  if (!currentDomain || !startTime || isIdle) return;
+/* ================= CORE TRACKING ================= */
 
-  const now = Date.now();
-  const timeSpent = now - startTime;
+/**
+ * ⏱️ Called EVERY SECOND
+ */
+function trackOneSecond() {
+  if (!currentDomain || isIdle) return;
 
-  chrome.storage.local.get(["timeData"], (res) => {
+  const today = getTodayKey();
+
+  chrome.storage.local.get(["timeData"], res => {
     const timeData = res.timeData || {};
 
-    if (!timeData[currentDomain]) {
-      timeData[currentDomain] = {
+    if (!timeData[today]) timeData[today] = {};
+    if (!timeData[today][currentDomain]) {
+      timeData[today][currentDomain] = {
         time: 0,
         category: getCategory(currentDomain)
       };
     }
 
-    timeData[currentDomain].time += timeSpent;
+    // ✅ ADD EXACTLY 1 SECOND
+    timeData[today][currentDomain].time += 1000;
+
     chrome.storage.local.set({ timeData });
   });
-
-  startTime = now;
 }
 
-// Tab switch
-chrome.tabs.onActivated.addListener((activeInfo) => {
-  saveCurrentTime();
+/* ================= HEARTBEAT ================= */
 
-  chrome.tabs.get(activeInfo.tabId, (tab) => {
+// 🔥 REAL TIME TRACKING (every second)
+setInterval(trackOneSecond, 1000);
+
+/* ================= TAB EVENTS ================= */
+
+chrome.tabs.onActivated.addListener(info => {
+  chrome.tabs.get(info.tabId, tab => {
     currentDomain = getDomain(tab.url);
-    startTime = Date.now();
   });
 });
 
-// 🔴 MESSAGE HANDLER (NO DOM HERE)
-chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  if (msg.action === "flushCurrentTab") {
-    saveCurrentTime();
-    sendResponse({ status: "ok" });
-    return true; // keeps channel open safely
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (changeInfo.url) {
+    currentDomain = getDomain(changeInfo.url);
   }
 });
 
-console.log("Background service worker running (stable)");
+/* ================= IDLE HANDLING ================= */
+
+chrome.idle.setDetectionInterval(60);
+
+chrome.idle.onStateChanged.addListener(state => {
+  isIdle = state !== "active";
+});
+
+/* ================= INITIAL TAB ================= */
+
+chrome.tabs.query({ active: true, lastFocusedWindow: true }, tabs => {
+  if (tabs[0]?.url) {
+    currentDomain = getDomain(tabs[0].url);
+  }
+});
