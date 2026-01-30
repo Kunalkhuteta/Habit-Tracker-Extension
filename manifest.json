@@ -1,14 +1,52 @@
 {
   "manifest_version": 3,
-  "name": "Habit & Productivity Tracker",
-  "version": "0.0.1",
-  "description": "Tracks time spent on websites",
-  "permissions": ["tabs", "storage", "activeTab", "idle"],
+  "name": "Habit Tracker",
+  "version": "1.0",
+  "description": "Track productivity and block distractions",
+
+  "permissions": [
+    "storage",
+    "notifications",
+    "tabs",
+    "idle",
+    "windows",
+    "declarativeNetRequest"
+  ],
+
+  "host_permissions": [
+    "*://*.youtube.com/*",
+    "*://youtube.com/*",
+    "*://*.instagram.com/*",
+    "*://instagram.com/*"
+  ],
+
+  "declarative_net_request": {
+    "rule_resources": [
+      {
+        "id": "blocker",
+        "enabled": false,
+        "path": "rules.json"
+      }
+    ]
+  },
+
+  "web_accessible_resources": [
+    {
+      "resources": ["blocked.html"],
+      "matches": ["<all_urls>"]
+    }
+  ],
 
   "background": {
     "service_worker": "background.js"
   },
+
   "action": {
-    "default_popup": "dashboard.html"
+    "default_popup": "dashboard.html",
+    "default_icon": {
+      "16": "icon16.png",
+      "48": "icon48.png",
+      "128": "icon128.png"
+    }
   }
 }
