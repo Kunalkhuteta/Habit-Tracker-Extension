@@ -18,8 +18,13 @@
   <button id="focusBtn">FOCUS MODE OFF</button>
   <button id="startFocus">▶ Start Focus Mode</button>
   <button id="stopFocus">⏸ Stop Focus Mode</button>
+  <script>
+    document.getElementById("stopFocus").onclick = () => {
+      chrome.runtime.sendMessage({ type: "FOCUS_OFF" });
+    };
+  </script>
   <button id="hardFocus">Hard Focus</button>
-</div>
+</div>  
 
 
 

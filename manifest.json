@@ -2,7 +2,6 @@
   "manifest_version": 3,
   "name": "Habit Tracker",
   "version": "1.0",
-  "description": "Track productivity and block distractions",
 
   "permissions": [
     "storage",
@@ -14,21 +13,8 @@
   ],
 
   "host_permissions": [
-    "*://*.youtube.com/*",
-    "*://youtube.com/*",
-    "*://*.instagram.com/*",
-    "*://instagram.com/*"
+    "<all_urls>"
   ],
-
-  "declarative_net_request": {
-    "rule_resources": [
-      {
-        "id": "blocker",
-        "enabled": false,
-        "path": "rules.json"
-      }
-    ]
-  },
 
   "web_accessible_resources": [
     {
@@ -42,11 +28,6 @@
   },
 
   "action": {
-    "default_popup": "dashboard.html",
-    "default_icon": {
-      "16": "icon16.png",
-      "48": "icon48.png",
-      "128": "icon128.png"
-    }
+    "default_popup": "dashboard.html"
   }
 }

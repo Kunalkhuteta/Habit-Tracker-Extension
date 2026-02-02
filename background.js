@@ -15,6 +15,9 @@ const breakDuration = 5 * 60 * 1000;
 let focusLockUntil = 0; // timestamp
 let hardFocusActive = false; // new
 
+let lastBlockedTab = null;
+let lastBlockedUrl = null;
+
 
 /* =========================================================
    BLOCKING RULES
@@ -137,13 +140,6 @@ function notify(message) {
   });
 }
 
-/* =========================================================
-   BLOCKING CONTROL
-========================================================= */
-/* =========================
-   DYNAMIC SITE BLOCKING
-========================= */
-
 function normalizeSite(site) {
   site = site.trim().toLowerCase();
   site = site.replace(/^https?:\/\//, ""); // remove protocol
@@ -175,26 +171,64 @@ function applyBlockedSites(sites) {
   });
 }
 
-/* =========================
-   OVERRIDE ENABLE/DISABLE BLOCKING
-========================= */
+
+
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (!changeInfo.url) return;
+
+  // If user is redirected to blocked.html
+  if (changeInfo.url.includes("blocked.html")) {
+    // Save the last attempted URL
+    if (tab.pendingUrl) {
+      chrome.storage.local.set({
+        lastBlockedUrl: tab.pendingUrl
+      });
+    }
+  }
+});
+
+const FOCUS_RULE_IDS = [1001, 1002];
 
 function enableBlocking() {
-  chrome.storage.local.get(["blockedSites"], res => {
-    const sites = res.blockedSites || [];
-    applyBlockedSites(sites);
+  const rules = [
+    {
+      id: 1001,
+      priority: 1,
+      action: {
+        type: "redirect",
+        redirect: { extensionPath: "/blocked.html" }
+      },
+      condition: {
+        urlFilter: "||youtube.com^",
+        resourceTypes: ["main_frame"]
+      }
+    },
+    {
+      id: 1002,
+      priority: 1,
+      action: {
+        type: "redirect",
+        redirect: { extensionPath: "/blocked.html" }
+      },
+      condition: {
+        urlFilter: "||instagram.com^",
+        resourceTypes: ["main_frame"]
+      }
+    }
+  ];
+
+  chrome.declarativeNetRequest.updateDynamicRules({
+    removeRuleIds: FOCUS_RULE_IDS,
+    addRules: rules
   });
 }
 
 function disableBlocking() {
-  chrome.declarativeNetRequest.getDynamicRules(existingRules => {
-    const oldIds = existingRules.map(r => r.id);
-    chrome.declarativeNetRequest.updateDynamicRules({ removeRuleIds: oldIds });
+  chrome.declarativeNetRequest.updateDynamicRules({
+    removeRuleIds: FOCUS_RULE_IDS
   });
 }
-/* =========================================================
-   POMODORO ENGINE (ONLY HERE)
-========================================================= */
+
 
 function startFocus(durationMinutes = 25, hard = false) {
   const now = Date.now();
@@ -238,19 +272,29 @@ function stopFocus(force = false) {
   hardFocusActive = false;
   focusLockUntil = 0;
 
+  chrome.storage.local.get(["lastBlockedUrl"], (res) => {
+    disableBlocking();
+
+    if (res.lastBlockedUrl) {
+      chrome.tabs.query({ active: true, lastFocusedWindow: true }, (tabs) => {
+        if (tabs[0]?.id) {
+          chrome.tabs.update(tabs[0].id, {
+            url: res.lastBlockedUrl
+          });
+        }
+      });
+
+      chrome.storage.local.remove("lastBlockedUrl");
+    }
+  });
+
   chrome.storage.local.set({
     focusMode: false,
     focusLockUntil: 0
   });
 
-  // ✅ Remove dynamic blocking
-  disableBlocking();
   updateBadge();
   notify("Focus Mode OFF");
-
-  chrome.tabs.query({ active: true, lastFocusedWindow: true }, (tabs) => {
-    if (tabs[0]?.id) chrome.tabs.reload(tabs[0].id);
-  });
 }
 
 /* =========================================================

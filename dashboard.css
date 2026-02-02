@@ -1,62 +1,196 @@
+/* =====================
+   GLOBAL
+===================== */
 body {
-  font-family: Arial, sans-serif;
-  padding: 20px;
+  font-family: Inter, Arial, sans-serif;
+  background: linear-gradient(180deg, #f8faff, #f1f5f9);
+  margin: 0;
+  padding: 18px;
+  width: 380px;
+  color: #0f172a;
 }
 
-h1, h2 {
+/* =====================
+   HEADINGS
+===================== */
+h1 {
+  font-size: 21px;
+  margin-bottom: 14px;
   text-align: center;
+  font-weight: 600;
+}
+
+h2 {
+  font-size: 15px;
+  margin: 18px 0 10px;
+  color: #334155;
+}
+
+/* =====================
+   BUTTON BASE
+===================== */
+button {
+  border: none;
+  border-radius: 10px;
+  padding: 10px 14px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  background: linear-gradient(135deg, #4f46e5, #6366f1);
+  color: white;
+  transition: all 0.2s ease;
+}
+
+button:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 16px rgba(79, 70, 229, 0.25);
+}
+
+button:active {
+  transform: scale(0.98);
+}
+
+button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+
+/* =====================
+   SECONDARY BUTTON
+===================== */
+#refreshBtn {
+  background: #e5e7eb;
+  color: #111827;
+  box-shadow: none;
+}
+
+#refreshBtn:hover {
+  background: #d1d5db;
+}
+
+/* =====================
+   CARDS
+===================== */
+.card {
+  background: white;
+  border-radius: 16px;
+  padding: 14px;
+  margin-bottom: 14px;
+  box-shadow:
+    0 10px 25px rgba(15, 23, 42, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.4);
+}
+
+/* =====================
+   SUMMARY GRID
+===================== */
+#summary {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
 }
 
 #summary p {
-  font-size: 18px;
-  margin: 5px 0;
+  background: linear-gradient(135deg, #f9fafb, #f1f5f9);
+  padding: 12px;
+  border-radius: 14px;
+  font-size: 13px;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 }
 
+#summary span {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+/* =====================
+   CATEGORY COLORS
+===================== */
+#learningTime { color: #16a34a; }
+#distractionTime { color: #dc2626; }
+#developmentTime { color: #4f46e5; }
+#otherTime { color: #ea580c; }
+
+/* =====================
+   CHART
+===================== */
+#chartContainer {
+  background: white;
+  border-radius: 16px;
+  padding: 12px;
+  height: 230px;
+}
+
+/* =====================
+   TOP SITES
+===================== */
 #topSites {
   list-style: none;
   padding: 0;
+  margin: 0;
 }
 
 #topSites li {
-  padding: 4px 0;
-}
-body {
-  font-family: Arial, sans-serif;
-  padding: 10px;
-  width: 360px;
+  background: linear-gradient(135deg, #f8fafc, #f1f5f9);
+  padding: 10px 12px;
+  margin-bottom: 8px;
+  border-radius: 12px;
+  font-size: 13px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
 }
 
-#chartContainer {
-  position: relative;
-  height: 220px;
-  margin: 10px 0;
+/* =====================
+   FOCUS MODE
+===================== */
+.focus-mode {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-bottom: 14px;
 }
-  
+
+#focusBtn {
+  grid-column: span 2;
+  background: linear-gradient(135deg, #020617, #111827);
+  letter-spacing: 0.5px;
+}
+
+#hardFocus {
+  background: linear-gradient(135deg, #dc2626, #ef4444);
+}
+
+/* =====================
+   EXPORT
+===================== */
 .export-section {
   display: flex;
   gap: 10px;
-  margin-top: 10px;
-}
-
-.export-section button {
-  flex: 1;
-  padding: 8px;
-  cursor: pointer;
-  border-radius: 6px;
-  border: none;
-  font-size: 13px;
 }
 
 #exportJsonBtn {
-  background-color: #4caf50;
-  color: white;
+  background: linear-gradient(135deg, #16a34a, #22c55e);
 }
 
 #exportCsvBtn {
-  background-color: #2196f3;
-  color: white;
+  background: linear-gradient(135deg, #0284c7, #38bdf8);
 }
 
-.export-section button:hover {
-  opacity: 0.9;
+/* =====================
+   DROPDOWN
+===================== */
+select {
+  width: 100%;
+  padding: 10px;
+  border-radius: 12px;
+  border: 1px solid #cbd5f5;
+  background: white;
+  font-size: 13px;
+  margin-bottom: 12px;
 }
