@@ -1,4 +1,5 @@
 let timeChartInstance = null;
+const blockedSiteButtons = [];
 
 setInterval(loadDashboard, 10000);
 
@@ -95,9 +96,7 @@ function loadDashboard() {
 
     renderChart(categoryTime);
   });
-  requestAnimationFrame(() => {
-    renderChart(categoryTime);
-  });
+
 }
 
 chrome.storage.onChanged.addListener((changes, area) => {
@@ -267,4 +266,73 @@ document.getElementById("openDashboard").addEventListener("click", () => {
     height: Math.floor(screen.height / 2)  // half of your screen height
   });
 });
+
+const input = document.getElementById("blockSiteInput");
+const addBtn = document.getElementById("addBlockSite");
+const list = document.getElementById("blockedSitesList");
+
+// Add site to backend
+addBtn.addEventListener("click", () => {
+  const site = input.value.trim();
+  if (!site) return;
+
+  chrome.runtime.sendMessage({ type: "ADD_BLOCK_SITE", site }, res => {
+    if (res?.success) {
+      input.value = "";
+      loadBlockedSites();
+    }
+  });
+});
+
+// Load blocked sites from backend and show in popup
+async function loadBlockedSites() {
+  try {
+    const res = await fetch("http://localhost:5000/blocked-sites");
+    const sites = await res.json();
+
+    // Check if Focus Mode is ON
+    chrome.runtime.sendMessage({ type: "GET_FOCUS_STATUS" }, (statusRes) => {
+      const focusOn = statusRes?.status || false;
+
+      list.innerHTML = "";
+      sites.forEach(site => {
+        const li = document.createElement("li");
+        li.style.display = "flex";
+        li.style.justifyContent = "space-between";
+        li.style.alignItems = "center";
+
+        const span = document.createElement("span");
+        span.textContent = site;
+
+        const removeBtn = document.createElement("button");
+        removeBtn.textContent = "❌";
+        removeBtn.style.marginLeft = "10px";
+        removeBtn.disabled = focusOn; // disable if focus mode is ON
+        removeBtn.title = focusOn ? "Cannot remove while Focus Mode is ON" : "Remove site";
+
+        removeBtn.addEventListener("click", async () => {
+          if (focusOn) return;
+
+          try {
+            await fetch(`http://localhost:5000/blocked-sites/${encodeURIComponent(site)}`, {
+              method: "DELETE"
+            });
+            loadBlockedSites(); // refresh list
+            // Remove rules if focus mode OFF
+            await applyBlockedSitesRulesIfFocusOn();
+          } catch (err) {
+            console.error("Failed to remove site", err);
+          }
+        });
+
+        li.appendChild(span);
+        li.appendChild(removeBtn);
+        list.appendChild(li);
+      });
+    });
+  } catch (err) {
+    console.error("Failed to load blocked sites", err);
+  }
+}
+document.addEventListener("DOMContentLoaded", loadBlockedSites);
 

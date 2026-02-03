@@ -18,11 +18,7 @@
   <button id="focusBtn">FOCUS MODE OFF</button>
   <button id="startFocus">▶ Start Focus Mode</button>
   <button id="stopFocus">⏸ Stop Focus Mode</button>
-  <script>
-    document.getElementById("stopFocus").onclick = () => {
-      chrome.runtime.sendMessage({ type: "FOCUS_OFF" });
-    };
-  </script>
+  
   <button id="hardFocus">Hard Focus</button>
 </div>  
 
@@ -55,17 +51,22 @@
   <h2>Top Sites</h2>
   <ul id="topSites"></ul>
 
-  <!-- 🔴 SCRIPT ORDER IS CRITICAL -->
-  <script src="chart.min.js"></script>
-  <script src="dashboard.js"></script>
 
+  
   <h2>Export Data</h2>
-
-<div class="export-section">
-  <button id="exportJsonBtn">⬇ Export JSON</button>
-  <button id="exportCsvBtn">⬇ Export CSV</button>
-</div>
-
-
+  
+  <div class="export-section">
+    <button id="exportJsonBtn">⬇ Export JSON</button>
+    <button id="exportCsvBtn">⬇ Export CSV</button>
+  </div>
+  
+  <h2>Block a site</h2>
+  <input type="text" id="blockSiteInput" placeholder="example.com" />
+  <button id="addBlockSite">Add</button>
+  <ul id="blockedSitesList"></ul>
+  
+    <!-- 🔴 SCRIPT ORDER IS CRITICAL -->
+    <script src="chart.min.js"></script>
+  <script src="dashboard.js"></script>
 </body>
 </html>

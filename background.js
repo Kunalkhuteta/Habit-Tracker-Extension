@@ -19,31 +19,31 @@ let lastBlockedTab = null;
 let lastBlockedUrl = null;
 
 
-/* =========================================================
-   BLOCKING RULES
-========================================================= */
-const BLOCK_RULE_IDS = [1, 2];
+// /* =========================================================
+//    BLOCKING RULES
+// ========================================================= */
+// const BLOCK_RULE_IDS = [1, 2];
 
-const BLOCK_RULES = [
-  {
-  id: 1,
-  priority: 1,
-  action: { type: "block" },
-  condition: {
-    urlFilter: "||youtube.com/",
-    resourceTypes: ["main_frame"]
-  }
-},
-{
-  id: 2,
-  priority: 1,
-  action: { type: "block" },
-  condition: {
-    urlFilter: "||instagram.com/",
-    resourceTypes: ["main_frame"]
-  }
-}
-];
+// const BLOCK_RULES = [
+//   {
+//   id: 1,
+//   priority: 1,
+//   action: { type: "block" },
+//   condition: {
+//     urlFilter: "||youtube.com/",
+//     resourceTypes: ["main_frame"]
+//   }
+// },
+// {
+//   id: 2,
+//   priority: 1,
+//   action: { type: "block" },
+//   condition: {
+//     urlFilter: "||github.com/",
+//     resourceTypes: ["main_frame"]
+//   }
+// }
+// ];
 
 /* =========================================================
    UTILS
@@ -120,6 +120,7 @@ chrome.idle.onStateChanged.addListener(state => {
 });
 
 chrome.tabs.query({ active: true, lastFocusedWindow: true }, tabs => {
+  if (!tabs || !tabs.length) return;
   if (tabs[0]?.url) currentDomain = getDomain(tabs[0].url);
 });
 
@@ -229,8 +230,59 @@ function disableBlocking() {
   });
 }
 
+async function enableBlockingFromServer() {
+  // Only apply rules if focus mode is active
+  chrome.storage.local.get(["focusMode"], async (res) => {
+    if (!res.focusMode) {
+      console.log("Focus Mode is OFF — skipping applyBlockedSites");
+      return;
+    }
 
-function startFocus(durationMinutes = 25, hard = false) {
+    try {
+      const response = await fetch("http://localhost:5000/blocked-sites");
+      const blockedSites = await response.json();
+
+      const BASE_RULE_ID = 1000;
+      const MAX_RULES = 100;
+
+      const rules = blockedSites.slice(0, MAX_RULES).map((site, i) => ({
+        id: BASE_RULE_ID + i,
+        priority: 1,
+        action: {
+          type: "redirect",
+          redirect: { extensionPath: "/blocked.html" }
+        },
+        condition: {
+          urlFilter: `||${site}^`,
+          resourceTypes: ["main_frame"]
+        }
+      }));
+
+      const removeIds = [];
+      for (let i = 0; i < MAX_RULES; i++) removeIds.push(BASE_RULE_ID + i);
+
+      chrome.declarativeNetRequest.updateDynamicRules({
+        removeRuleIds: removeIds,
+        addRules: rules
+      });
+
+      console.log("Blocking rules updated from server:", blockedSites);
+    } catch (err) {
+      console.error("Failed to fetch blocked sites:", err);
+    }
+  });
+}
+
+function isBlockedUrl(url, blockedSites) {
+  try {
+    const hostname = new URL(url).hostname.replace(/^www\./, "");
+    return blockedSites.some(site => hostname === site || hostname.endsWith("." + site));
+  } catch {
+    return false;
+  }
+}
+
+async function startFocus(durationMinutes = 25, hard = false) {
   const now = Date.now();
   const durationMs = Math.max(5, durationMinutes) * 60 * 1000;
 
@@ -240,18 +292,28 @@ function startFocus(durationMinutes = 25, hard = false) {
   hardFocusActive = hard;
   focusLockUntil = hard ? now + durationMs : 0;
 
-  chrome.storage.local.set({
+  await chrome.storage.local.set({
     focusMode: true,
     focusLockUntil
   });
 
-  // ✅ Apply blocking for Focus Mode
-  enableBlocking();
-  updateBadge();
-  notify(`Focus Mode ON • ${durationMinutes} min${hard ? " (HARD)" : ""}`);
+  // ✅ Apply blocking rules
+  await applyBlockedSitesRulesIfFocusOn();
 
-  chrome.tabs.query({ active: true, lastFocusedWindow: true }, (tabs) => {
-    if (tabs[0]?.id) chrome.tabs.reload(tabs[0].id);
+  updateBadge();
+  notify(`Focus Mode ON • ${durationMinutes} min`);
+
+  // 🔥 RELOAD ALL NORMAL TABS
+  chrome.tabs.query({ windowType: "normal" }, async (tabs) => {
+    const blockedSites = await fetchBlockedSites();
+
+    tabs.forEach(tab => {
+      if (!tab.url || tab.url.startsWith("chrome://")) return;
+
+      if (isBlockedUrl(tab.url, blockedSites)) {
+        chrome.tabs.reload(tab.id);
+      }
+    });
   });
 
   if (hard) {
@@ -261,8 +323,9 @@ function startFocus(durationMinutes = 25, hard = false) {
 
 function stopFocus(force = false) {
   const now = Date.now();
+
   if (!force && hardFocusActive && now < focusLockUntil) {
-    notify("⛔ Hard focus active, cannot stop until time ends");
+    notify("Hard focus active, cannot stop yet");
     return;
   }
 
@@ -272,21 +335,8 @@ function stopFocus(force = false) {
   hardFocusActive = false;
   focusLockUntil = 0;
 
-  chrome.storage.local.get(["lastBlockedUrl"], (res) => {
-    disableBlocking();
-
-    if (res.lastBlockedUrl) {
-      chrome.tabs.query({ active: true, lastFocusedWindow: true }, (tabs) => {
-        if (tabs[0]?.id) {
-          chrome.tabs.update(tabs[0].id, {
-            url: res.lastBlockedUrl
-          });
-        }
-      });
-
-      chrome.storage.local.remove("lastBlockedUrl");
-    }
-  });
+  // ✅ ONLY remove rules — NO reload
+  removeAllBlockingRules();
 
   chrome.storage.local.set({
     focusMode: false,
@@ -300,8 +350,9 @@ function stopFocus(force = false) {
 /* =========================================================
    MESSAGE HANDLER
 ========================================================= */
-chrome.runtime.onMessage.addListener((msg, _, sendResponse) => {
-  const now = Date.now();
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  (async () => {
+    const now = Date.now();
 
   if (msg.type === "FOCUS_ON") {
     // Normal focus: instantly toggle ON
@@ -312,10 +363,14 @@ chrome.runtime.onMessage.addListener((msg, _, sendResponse) => {
       if (!msg.duration || msg.duration < 5) msg.duration = 25;
       startFocus(msg.duration, true);
     }
+
+    return ;
   }
 
   if (msg.type === "FOCUS_OFF") {
     stopFocus(false);
+    return ;
+
   }
 
   if (msg.type === "GET_FOCUS_STATUS") {
@@ -325,6 +380,20 @@ chrome.runtime.onMessage.addListener((msg, _, sendResponse) => {
       remaining: Math.max(0, focusLockUntil - now)
     });
   }
+  if (msg.type === "ADD_BLOCK_SITE") {
+    await fetch("http://localhost:5000/blocked-sites", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ site: msg.site })
+    });
+
+    // ✅ Apply rules ONLY if focus mode is ON
+    await applyBlockedSitesRulesIfFocusOn();
+
+    sendResponse({ success: true });
+    return;
+  }
+})();
 
   return true;
 });
@@ -347,3 +416,64 @@ function syncFocusState() {
     }
   });
 } 
+
+const BASE_RULE_ID = 1000;
+const MAX_RULES = 100;
+
+// Fetch blocked sites from backend
+async function fetchBlockedSites() {
+  try {
+    const res = await fetch("http://localhost:5000/blocked-sites");
+    const sites = await res.json();
+    return sites || [];
+  } catch (err) {
+    console.error("Failed to fetch blocked sites:", err);
+    return [];
+  }
+}
+
+function removeAllBlockingRules() {
+  const removeIds = Array.from(
+    { length: MAX_RULES },
+    (_, i) => BASE_RULE_ID + i
+  );
+
+  chrome.declarativeNetRequest.updateDynamicRules({
+    removeRuleIds: removeIds
+  });
+}
+
+async function applyBlockedSitesRulesIfFocusOn() {
+  chrome.storage.local.get(["focusMode"], async (res) => {
+    if (!res.focusMode) {
+      removeAllBlockingRules();
+      return;
+    }
+
+    const blockedSites = await fetchBlockedSites();
+
+    const rules = blockedSites.slice(0, MAX_RULES).map((site, i) => ({
+      id: BASE_RULE_ID + i,
+      priority: 1,
+      action: {
+        type: "redirect",
+        redirect: { extensionPath: "/blocked.html" }
+      },
+      condition: {
+        urlFilter: `||${site}^`,
+        resourceTypes: ["main_frame"]
+      }
+    }));
+
+    const removeIds = Array.from(
+      { length: MAX_RULES },
+      (_, i) => BASE_RULE_ID + i
+    );
+
+    chrome.declarativeNetRequest.updateDynamicRules({
+      removeRuleIds: removeIds,
+      addRules: rules
+    });
+  });
+}
+
