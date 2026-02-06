@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Focus Tracker</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <div class="popup-header">
+    <h1>⏱️ Focus Tracker</h1>
+  </div>
+
+  <!-- Focus Mode Status -->
+  <div class="focus-status-card">
+    <div class="status-indicator" id="statusIndicator"></div>
+    <span id="focusBtn">FOCUS MODE OFF</span>
+  </div>
+
+  <!-- Quick Stats -->
+  <div class="quick-stats">
+    <div class="stat">
+      <span class="stat-label">Productivity</span>
+      <span class="stat-value" id="productivityScore">0</span>
+    </div>
+    <div class="stat">
+      <span class="stat-label">Today</span>
+      <span class="stat-value" id="totalTime">0m</span>
+    </div>
+  </div>
+
+  <!-- Focus Controls -->
+  <div class="focus-controls">
+    <button id="startFocus" class="btn-primary">
+      ▶️ Start (25m)
+    </button>
+    <button id="hardFocus" class="btn-danger">
+      🔒 Hard Focus
+    </button>
+    <button id="stopFocus" class="btn-secondary">
+      ⏸️ Stop
+    </button>
+  </div>
+
+  <!-- Quick Actions -->
+  <div class="quick-actions">
+    <button id="openDashboard" class="btn-dashboard">
+      📊 Open Dashboard
+    </button>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

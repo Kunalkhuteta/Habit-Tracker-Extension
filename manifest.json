@@ -1,33 +1,36 @@
 {
   "manifest_version": 3,
-  "name": "Habit Tracker",
-  "version": "1.0",
-
+  "name": "Focus Tracker - Productivity & Time Management",
+  "version": "2.0.0",
+  "description": "Track your time, block distractions, and boost productivity with focus mode, daily reflections, and analytics.",
   "permissions": [
-    "storage",
-    "notifications",
     "tabs",
+    "storage",
     "idle",
-    "windows",
-    "declarativeNetRequest"
+    "notifications",
+    "declarativeNetRequest",
+    "declarativeNetRequestFeedback"
   ],
-
   "host_permissions": [
     "<all_urls>"
   ],
-
-  "web_accessible_resources": [
-    {
-      "resources": ["blocked.html"],
-      "matches": ["<all_urls>"]
-    }
-  ],
-
   "background": {
     "service_worker": "background.js"
   },
-
   "action": {
-    "default_popup": "dashboard.html"
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icon.png",
+      "48": "icon.png",
+      "128": "icon.png"
+    }
+  },
+  "icons": {
+    "16": "icon.png",
+    "48": "icon.png",
+    "128": "icon.png"
+  },
+  "declarative_net_request": {
+    "rule_resources": []
   }
 }

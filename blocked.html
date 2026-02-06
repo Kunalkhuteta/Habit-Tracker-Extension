@@ -7,11 +7,11 @@
 
   <style>
     :root {
-      --bg: #0f172a;          /* slate-900 */
-      --card: #020617;        /* slate-950 */
-      --accent: #22c55e;      /* green-500 */
-      --text: #e5e7eb;        /* gray-200 */
-      --muted: #94a3b8;       /* slate-400 */
+      --bg: #0f172a;
+      --card: #020617;
+      --accent: #22c55e;
+      --text: #f1f5f9;
+      --muted: #94a3b8;
     }
 
     * {
@@ -21,8 +21,8 @@
     body {
       margin: 0;
       height: 100vh;
-      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
-        Roboto, Ubuntu, Cantarell, "Helvetica Neue", Arial, sans-serif;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+        "Helvetica Neue", Arial, sans-serif;
       background: radial-gradient(circle at top, #020617, var(--bg));
       display: flex;
       align-items: center;
@@ -32,57 +32,102 @@
 
     .card {
       background: linear-gradient(180deg, #020617, var(--card));
-      border-radius: 16px;
-      padding: 40px 32px;
-      max-width: 420px;
+      border-radius: 20px;
+      padding: 48px 40px;
+      max-width: 480px;
       width: 90%;
       text-align: center;
       box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6);
-      border: 1px solid rgba(255, 255, 255, 0.06);
+      border: 1px solid rgba(255, 255, 255, 0.08);
     }
 
     .icon {
-      width: 64px;
-      height: 64px;
-      margin: 0 auto 20px;
+      width: 80px;
+      height: 80px;
+      margin: 0 auto 24px;
       border-radius: 50%;
-      background: rgba(34, 197, 94, 0.12);
+      background: rgba(34, 197, 94, 0.15);
       display: flex;
       align-items: center;
       justify-content: center;
-      font-size: 32px;
-      color: var(--accent);
+      font-size: 40px;
+      animation: pulse 2s infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% {
+        transform: scale(1);
+      }
+      50% {
+        transform: scale(1.05);
+      }
     }
 
     h1 {
-      font-size: 1.6rem;
-      margin: 0 0 10px;
-      font-weight: 600;
+      font-size: 28px;
+      margin: 0 0 12px;
+      font-weight: 700;
+      background: linear-gradient(135deg, #22c55e, #16a34a);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
     }
 
     p {
-      margin: 0;
+      margin: 0 0 24px;
       color: var(--muted);
-      font-size: 0.95rem;
-      line-height: 1.5;
+      font-size: 16px;
+      line-height: 1.6;
     }
 
     .badge {
       display: inline-block;
-      margin-top: 24px;
-      padding: 8px 14px;
+      padding: 10px 18px;
       border-radius: 999px;
-      background: rgba(34, 197, 94, 0.12);
+      background: rgba(34, 197, 94, 0.15);
       color: var(--accent);
-      font-size: 0.8rem;
+      font-size: 13px;
       font-weight: 600;
-      letter-spacing: 0.04em;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      margin-bottom: 24px;
+    }
+
+    .quote {
+      margin-top: 32px;
+      padding: 20px;
+      background: rgba(255, 255, 255, 0.04);
+      border-left: 3px solid var(--accent);
+      border-radius: 8px;
+      font-size: 14px;
+      font-style: italic;
+      color: var(--muted);
     }
 
     footer {
-      margin-top: 18px;
-      font-size: 0.75rem;
+      margin-top: 24px;
+      font-size: 13px;
       color: #64748b;
+      line-height: 1.6;
+    }
+
+    .progress-ring {
+      width: 120px;
+      height: 120px;
+      margin: 24px auto;
+    }
+
+    .progress-ring__circle {
+      stroke: var(--accent);
+      stroke-width: 4;
+      fill: transparent;
+      animation: draw 2s ease-out forwards;
+    }
+
+    @keyframes draw {
+      to {
+        stroke-dashoffset: 0;
+      }
     }
   </style>
 </head>
@@ -90,18 +135,24 @@
   <div class="card">
     <div class="icon">⏳</div>
 
-    <h1>Focus Mode is Active</h1>
+    <h1>Focus Mode Active</h1>
+
+    <div class="badge">🔒 BLOCKED</div>
 
     <p>
-      This website is blocked to help you stay focused.
-      <br />
-      Come back once your focus session ends.
+      This website is blocked to help you stay focused and productive.
+      Your focus session is currently in progress.
     </p>
 
-    <div class="badge">FOCUS MODE ON</div>
+    <div class="quote">
+      "Success is the sum of small efforts, repeated day in and day out."
+      <br><small>— Robert Collier</small>
+    </div>
 
     <footer>
-      Stay consistent. Small focus sessions compound.
+      <strong>💡 Pro Tip:</strong> Use this time to work on your most important task.
+      <br>
+      Every moment of focus compounds into long-term success.
     </footer>
   </div>
 </body>

@@ -2,71 +2,271 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>Habit Tracker Dashboard</title>
+  <title>Focus Tracker Dashboard</title>
   <link rel="stylesheet" href="dashboard.css" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 </head>
 
 <body>
-  <h1>Habit Tracker Dashboard<button id="refreshBtn" style="margin:10px 0; padding:6px 10px;">
-  🔄 Refresh
-</h1>
-</button>
-<button id="openDashboard">Open Full Dashboard</button>
+  <!-- HEADER -->
+  <header class="dashboard-header">
+    <div class="header-left">
+      <h1>⏱️ Focus Tracker</h1>
+      <p class="subtitle">Track your productivity & stay focused</p>
+    </div>
+    <div class="header-right">
+      <button id="settingsBtn" class="icon-btn" title="Settings">⚙️</button>
+      <button id="refreshBtn" class="icon-btn" title="Refresh">🔄</button>
+    </div>
+  </header>
 
-<div class="focus-mode">
-  <button id="focusBtn">FOCUS MODE OFF</button>
-  <button id="startFocus">▶ Start Focus Mode</button>
-  <button id="stopFocus">⏸ Stop Focus Mode</button>
-  
-  <button id="hardFocus">Hard Focus</button>
-</div>  
+  <!-- SETTINGS MODAL -->
+  <div id="settingsModal" class="modal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2>⚙️ Settings</h2>
+        <button class="close-btn" onclick="closeSettings()">✕</button>
+      </div>
+      
+      <div class="settings-section">
+        <h3>🎨 Appearance</h3>
+        
+        <div class="setting-item">
+          <label>Theme</label>
+          <select id="themeSelect">
+            <option value="light">☀️ Light</option>
+            <option value="dark">🌙 Dark</option>
+          </select>
+        </div>
 
+        <div class="setting-item">
+          <label>Accent Color</label>
+          <div class="color-picker">
+            <button class="color-option" data-color="blue">💙</button>
+            <button class="color-option" data-color="green">💚</button>
+            <button class="color-option" data-color="purple">💜</button>
+            <button class="color-option" data-color="red">❤️</button>
+            <button class="color-option" data-color="orange">🧡</button>
+          </div>
+        </div>
+      </div>
 
+      <div class="settings-section">
+        <h3>📁 Category Management</h3>
+        <p class="help-text">Customize how websites are categorized</p>
+        
+        <div class="category-manager">
+          <input type="text" id="categoryDomain" placeholder="example.com" />
+          <select id="categorySelect">
+            <option value="Learning">📚 Learning</option>
+            <option value="Development">💻 Development</option>
+            <option value="Distraction">⚠️ Distraction</option>
+            <option value="Other">📦 Other</option>
+          </select>
+          <button id="addCategoryBtn">Add</button>
+        </div>
 
-  <select id="rangeSelect">
-  <option value="today">Today</option>
-  <option value="yesterday">Yesterday</option>
-  <option value="7days">Last 7 Days</option>
-</select>
+        <ul id="categoryList" class="category-list"></ul>
+      </div>
 
-<p>
-  Productivity Score:
-  <strong><span id="productivityScore">0</span>/100</strong>
-</p>
-
-  <div id="summary">
-    <p>Total Time: <span id="totalTime">0</span></p>
-    <p>Learning Time: <span id="learningTime">0</span></p>
-    <p>Distraction Time: <span id="distractionTime">0</span></p>
-    <p>Development Time: <span id="developmentTime">0</span></p>
-    <p>Other Time: <span id="otherTime">0</span></p>
+      <button class="save-settings-btn" onclick="saveSettings()">
+        💾 Save Settings
+      </button>
+    </div>
   </div>
 
-  <!-- 🔴 WRAP CANVAS IN A CONTAINER (IMPORTANT FOR CHART.JS) -->
-  <div id="chartContainer">
-    <canvas id="timeChart"></canvas>
+  <!-- MAIN GRID -->
+  <div class="dashboard-grid">
+    
+    <!-- LEFT COLUMN -->
+    <div class="left-column">
+      
+      <!-- FOCUS MODE CARD -->
+      <div class="card focus-card">
+        <h2>🎯 Focus Mode</h2>
+        
+        <div class="focus-status" id="focusStatus">
+          <div class="status-indicator"></div>
+          <span id="focusBtn">FOCUS MODE OFF</span>
+        </div>
+
+        <div class="focus-controls">
+          <button id="startFocus" class="btn-primary">
+            ▶️ Start Focus (25m)
+          </button>
+          <button id="hardFocus" class="btn-danger">
+            🔒 Hard Focus
+          </button>
+          <button id="stopFocus" class="btn-secondary">
+            ⏸️ Stop Focus
+          </button>
+        </div>
+
+        <div id="focusTimer" class="focus-timer" style="display:none;">
+          <span id="timerDisplay">25:00</span>
+        </div>
+      </div>
+
+      <!-- TIME RANGE SELECTOR -->
+      <div class="card">
+        <label for="rangeSelect"><strong>📅 Time Range</strong></label>
+        <select id="rangeSelect">
+          <option value="today">Today</option>
+          <option value="yesterday">Yesterday</option>
+          <option value="7days">Last 7 Days</option>
+          <option value="30days">Last 30 Days</option>
+        </select>
+      </div>
+
+      <!-- PRODUCTIVITY SCORE -->
+      <div class="card score-card">
+        <h2>📊 Productivity Score</h2>
+        <div class="score-display">
+          <div class="score-circle">
+            <span id="productivityScore">0</span>
+            <small>/100</small>
+          </div>
+        </div>
+        <p class="score-desc" id="scoreDesc">Keep going!</p>
+      </div>
+
+      <!-- BLOCKED SITES -->
+      <div class="card">
+        <h2>🚫 Blocked Sites</h2>
+        <div class="block-site-input">
+          <input type="text" id="blockSiteInput" placeholder="example.com" />
+          <button id="addBlockSite">Add</button>
+        </div>
+        <ul id="blockedSitesList" class="blocked-list"></ul>
+      </div>
+    </div>
+
+    <!-- MIDDLE COLUMN -->
+    <div class="middle-column">
+      
+      <!-- SUMMARY STATS -->
+      <div class="stats-grid">
+        <div class="stat-card">
+          <div class="stat-icon">⏱️</div>
+          <div class="stat-info">
+            <span class="stat-value" id="totalTime">0</span>
+            <span class="stat-label">Total Time</span>
+          </div>
+        </div>
+
+        <div class="stat-card learning">
+          <div class="stat-icon">📚</div>
+          <div class="stat-info">
+            <span class="stat-value" id="learningTime">0</span>
+            <span class="stat-label">Learning</span>
+          </div>
+        </div>
+
+        <div class="stat-card distraction">
+          <div class="stat-icon">⚠️</div>
+          <div class="stat-info">
+            <span class="stat-value" id="distractionTime">0</span>
+            <span class="stat-label">Distraction</span>
+          </div>
+        </div>
+
+        <div class="stat-card development">
+          <div class="stat-icon">💻</div>
+          <div class="stat-info">
+            <span class="stat-value" id="developmentTime">0</span>
+            <span class="stat-label">Development</span>
+          </div>
+        </div>
+
+        <div class="stat-card other">
+          <div class="stat-icon">📦</div>
+          <div class="stat-info">
+            <span class="stat-value" id="otherTime">0</span>
+            <span class="stat-label">Other</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- CHART -->
+      <div class="card chart-card">
+        <h2>📈 Category Breakdown</h2>
+        <div id="chartContainer">
+          <canvas id="timeChart"></canvas>
+        </div>
+      </div>
+
+      <!-- TOP SITES -->
+      <div class="card">
+        <h2>🏆 Top Sites</h2>
+        <ul id="topSites" class="top-sites-list"></ul>
+      </div>
+    </div>
+
+    <!-- RIGHT COLUMN -->
+    <div class="right-column">
+      
+      <!-- DAILY REFLECTION -->
+      <div class="card reflection-card">
+        <h2>🧘 Daily Reflection</h2>
+        <p class="help-text">Reflect on your day to improve tomorrow</p>
+
+        <div class="reflection-form">
+          <div class="form-group">
+            <label>What distracted you the most?</label>
+            <textarea id="reflectionDistractions" 
+                      placeholder="E.g., Social media, YouTube videos..."
+                      rows="2"></textarea>
+          </div>
+
+          <div class="form-group">
+            <label>What went well today?</label>
+            <textarea id="reflectionWentWell" 
+                      placeholder="E.g., Completed project, learned new skill..."
+                      rows="2"></textarea>
+          </div>
+
+          <div class="form-group">
+            <label>What can you improve?</label>
+            <textarea id="reflectionImprovements" 
+                      placeholder="E.g., Start work earlier, take breaks..."
+                      rows="2"></textarea>
+          </div>
+
+          <button id="saveReflection" class="btn-primary full-width">
+            💾 Save Reflection
+          </button>
+        </div>
+
+        <div id="reflectionSaved" class="success-message" style="display:none;">
+          ✅ Reflection saved!
+        </div>
+      </div>
+
+      <!-- WEEKLY SUMMARY -->
+      <div class="card">
+        <h2>📅 Weekly Summary</h2>
+        <div id="weeklySummary" class="weekly-summary">
+          <p class="loading-text">Loading...</p>
+        </div>
+      </div>
+
+      <!-- EXPORT -->
+      <div class="card">
+        <h2>📥 Export Data</h2>
+        <div class="export-buttons">
+          <button id="exportJsonBtn" class="btn-export">
+            📄 Export JSON
+          </button>
+          <button id="exportCsvBtn" class="btn-export">
+            📊 Export CSV
+          </button>
+        </div>
+      </div>
+    </div>
   </div>
 
-  <h2>Top Sites</h2>
-  <ul id="topSites"></ul>
-
-
-  
-  <h2>Export Data</h2>
-  
-  <div class="export-section">
-    <button id="exportJsonBtn">⬇ Export JSON</button>
-    <button id="exportCsvBtn">⬇ Export CSV</button>
-  </div>
-  
-  <h2>Block a site</h2>
-  <input type="text" id="blockSiteInput" placeholder="example.com" />
-  <button id="addBlockSite">Add</button>
-  <ul id="blockedSitesList"></ul>
-  
-    <!-- 🔴 SCRIPT ORDER IS CRITICAL -->
-    <script src="chart.min.js"></script>
+  <!-- SCRIPTS -->
+  <script src="chart.min.js"></script>
   <script src="dashboard.js"></script>
 </body>
 </html>
