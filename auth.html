@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Focus Tracker - Authentication</title>
+  <link rel="stylesheet" href="auth.css" />
+</head>
+<body>
+  <div class="auth-container">
+    <div class="auth-card">
+      <div class="auth-header">
+        <h1>⏱️ Focus Tracker</h1>
+        <p>Secure Token-Based Access</p>
+      </div>
+
+      <!-- EXISTING USER LOGIN -->
+      <div id="loginSection" class="auth-section">
+        <h2>Enter Your Access Token</h2>
+        <p class="description">Enter your unique access token to continue</p>
+        
+        <div class="input-group">
+          <input 
+            type="text" 
+            id="loginToken" 
+            placeholder="Enter your 64-character token"
+            autocomplete="off"
+            spellcheck="false"
+          />
+        </div>
+        
+        <button id="validateTokenBtn" class="btn-primary">
+          Validate Token
+        </button>
+
+        <div class="divider">
+          <span>OR</span>
+        </div>
+
+        <button id="showActivateBtn" class="btn-secondary">
+          New User? Activate Token
+        </button>
+
+        <button id="showForgotBtn" class="btn-link">
+          Forgot Token?
+        </button>
+      </div>
+
+      <!-- NEW USER ACTIVATION -->
+      <div id="activateSection" class="auth-section hidden">
+        <h2>Activate New Token</h2>
+        <div class="warning-box">
+          <p><strong>⚠️ Important:</strong></p>
+          <ul>
+            <li>A new token will be generated for you</li>
+            <li>This token is the ONLY way to access your data</li>
+            <li>If you lose it, data cannot be recovered unless you link an email</li>
+            <li>Store it in a password manager or safe location</li>
+          </ul>
+        </div>
+        
+        <div class="input-group">
+          <label>Email (Optional but Recommended)</label>
+          <input 
+            type="email" 
+            id="activateEmail" 
+            placeholder="your-email@example.com"
+            autocomplete="email"
+          />
+          <small>Linking an email allows token recovery if you lose it</small>
+        </div>
+        
+        <button id="activateTokenBtn" class="btn-primary">
+          Generate My Token
+        </button>
+
+        <button id="backToLoginBtn" class="btn-link">
+          ← Back to Login
+        </button>
+      </div>
+
+      <!-- TOKEN DISPLAY (After Activation) -->
+      <div id="tokenDisplaySection" class="auth-section hidden">
+        <h2>✅ Token Generated Successfully</h2>
+        <div class="success-box">
+          <p><strong>Your Access Token:</strong></p>
+          <div class="token-display" id="generatedToken"></div>
+          <button id="copyTokenBtn" class="btn-copy">
+            📋 Copy Token
+          </button>
+        </div>
+
+        <div class="warning-box">
+          <p><strong>⚠️ Critical:</strong></p>
+          <ul>
+            <li>Save this token immediately</li>
+            <li>You won't be able to see it again</li>
+            <li>Store it in a password manager</li>
+            <li>Without this token, you cannot access your data</li>
+          </ul>
+        </div>
+
+        <button id="continueBtn" class="btn-primary">
+          Continue to Dashboard
+        </button>
+      </div>
+
+      <!-- FORGOT TOKEN (OTP Recovery) -->
+      <div id="forgotSection" class="auth-section hidden">
+        <h2>Recover Your Token</h2>
+        <p class="description">
+          Enter your linked email to receive a recovery OTP
+        </p>
+
+        <div id="requestOtpForm">
+          <div class="input-group">
+            <label>Email Address</label>
+            <input 
+              type="email" 
+              id="recoveryEmail" 
+              placeholder="your-email@example.com"
+              autocomplete="email"
+            />
+          </div>
+          
+          <button id="requestOtpBtn" class="btn-primary">
+            Send Recovery OTP
+          </button>
+        </div>
+
+        <div id="verifyOtpForm" class="hidden">
+          <p class="success-text">
+            ✅ OTP sent to your email. Check your inbox.
+          </p>
+          
+          <div class="input-group">
+            <label>Enter 6-Digit OTP</label>
+            <input 
+              type="text" 
+              id="otpInput" 
+              placeholder="000000"
+              maxlength="6"
+              autocomplete="off"
+              pattern="[0-9]{6}"
+            />
+            <small>OTP expires in 5 minutes</small>
+          </div>
+          
+          <button id="verifyOtpBtn" class="btn-primary">
+            Verify OTP & Get New Token
+          </button>
+
+          <button id="resendOtpBtn" class="btn-link">
+            Resend OTP
+          </button>
+        </div>
+
+        <button id="backToLoginFromForgot" class="btn-link">
+          ← Back to Login
+        </button>
+      </div>
+
+      <!-- LOADING OVERLAY -->
+      <div id="loadingOverlay" class="loading-overlay hidden">
+        <div class="spinner"></div>
+        <p>Processing...</p>
+      </div>
+
+      <!-- ERROR MESSAGE -->
+      <div id="errorMessage" class="error-message hidden"></div>
+
+      <!-- SUCCESS MESSAGE -->
+      <div id="successMessage" class="success-message hidden"></div>
+    </div>
+  </div>
+
+  <script src="auth.js"></script>
+</body>
+</html>

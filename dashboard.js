@@ -1,11 +1,46 @@
 let timeChartInstance = null;
 let currentTheme = "light";
 let currentAccent = "blue";
+let authToken = null;
+
+/* =========================
+   AUTHENTICATION
+========================= */
+async function loadAuthToken() {
+  return new Promise((resolve) => {
+    chrome.storage.local.get(["authToken"], (data) => {
+      authToken = data.authToken || null;
+      resolve(authToken);
+    });
+  });
+}
+
+function getAuthHeaders() {
+  if (!authToken) {
+    console.error("No auth token available");
+    // Redirect to auth page
+    window.location.href = "auth.html";
+    return { "Content-Type": "application/json" };
+  }
+  
+  return {
+    "Content-Type": "application/json",
+    "Authorization": `Bearer ${authToken}`
+  };
+}
 
 /* =========================
    INITIALIZATION
 ========================= */
 document.addEventListener("DOMContentLoaded", async () => {
+  // Load auth token first
+  await loadAuthToken();
+  
+  if (!authToken) {
+    window.location.href = "auth.html";
+    return;
+  }
+  
   await loadPreferences();
   await loadCategories();
   
@@ -24,7 +59,9 @@ document.addEventListener("DOMContentLoaded", async () => {
 ========================= */
 async function loadPreferences() {
   try {
-    const res = await fetch("http://localhost:5000/preferences");
+    const res = await fetch("http://localhost:5000/preferences", {
+      headers: getAuthHeaders()
+    });
     const prefs = await res.json();
     
     currentTheme = prefs.theme || "light";
@@ -58,7 +95,7 @@ async function saveSettings() {
   try {
     await fetch("http://localhost:5000/preferences", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: getAuthHeaders(),
       body: JSON.stringify({ theme, accentColor: accent })
     });
     
@@ -104,7 +141,9 @@ function showNotification(message, type = "success") {
 ========================= */
 async function loadCategories() {
   try {
-    const res = await fetch("http://localhost:5000/categories");
+    const res = await fetch("http://localhost:5000/categories", {
+      headers: getAuthHeaders()
+    });
     const categories = await res.json();
     
     const list = document.getElementById("categoryList");
@@ -166,7 +205,7 @@ async function addCategory() {
   try {
     await fetch("http://localhost:5000/categories", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: getAuthHeaders(),
       body: JSON.stringify({ domain, category })
     });
     
@@ -186,7 +225,8 @@ async function addCategory() {
 async function deleteCategory(domain) {
   try {
     await fetch(`http://localhost:5000/categories/${encodeURIComponent(domain)}`, {
-      method: "DELETE"
+      method: "DELETE",
+      headers: getAuthHeaders()
     });
     
     chrome.runtime.sendMessage({ type: "SYNC_CATEGORIES" });
@@ -209,7 +249,9 @@ async function loadReflection() {
   const today = getTodayKey();
   
   try {
-    const res = await fetch(`http://localhost:5000/reflections/${today}`);
+    const res = await fetch(`http://localhost:5000/reflections/${today}`, {
+      headers: getAuthHeaders()
+    });
     const reflection = await res.json();
     
     if (reflection && reflection.date) {
@@ -234,7 +276,7 @@ async function saveReflection() {
   try {
     await fetch("http://localhost:5000/reflections", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: getAuthHeaders(),
       body: JSON.stringify({
         date: today,
         distractions,
@@ -270,7 +312,8 @@ async function loadWeeklySummary() {
   
   try {
     const res = await fetch(
-      `http://localhost:5000/reflections?startDate=${startDate}&endDate=${endDate}`
+      `http://localhost:5000/reflections?startDate=${startDate}&endDate=${endDate}`,
+      { headers: getAuthHeaders() }
     );
     const reflections = await res.json();
     
@@ -540,7 +583,9 @@ function initFocusControls() {
 ========================= */
 async function loadBlockedSites() {
   try {
-    const res = await fetch("http://localhost:5000/blocked-sites");
+    const res = await fetch("http://localhost:5000/blocked-sites", {
+      headers: getAuthHeaders()
+    });
     const sites = await res.json();
 
     chrome.runtime.sendMessage({ type: "GET_FOCUS_STATUS" }, (statusRes) => {
@@ -565,7 +610,8 @@ async function loadBlockedSites() {
 
           try {
             await fetch(`http://localhost:5000/blocked-sites/${encodeURIComponent(site)}`, {
-              method: "DELETE"
+              method: "DELETE",
+              headers: getAuthHeaders()
             });
             loadBlockedSites();
           } catch (err) {

@@ -17,9 +17,21 @@ const MAX_RULES = 100;
 // Category mappings from server
 let categoryMappings = {};
 
+// Authentication token
+let authToken = null;
+
 /* =========================================================
    UTILS
 ========================================================= */
+
+function normalizeDomain(domain) {
+  return domain
+    .toLowerCase()
+    .replace(/^https?:\/\//, "")
+    .replace(/^www\./, "")
+    .split("/")[0];
+}
+
 function getDomain(url) {
   try {
     return new URL(url).hostname.replace(/^www\./, "");
@@ -34,28 +46,75 @@ function getTodayKey() {
 
 async function getCategory(domain) {
   if (!domain) return "Other";
-  
-  // Check server-synced categories first
-  if (categoryMappings[domain]) {
-    return categoryMappings[domain];
+
+  const normalized = normalizeDomain(domain);
+
+  // Exact match
+  if (categoryMappings[normalized]) {
+    return categoryMappings[normalized];
   }
-  
-  // Fallback to default categorization
-  if (domain.includes("leetcode") || domain.includes("geeksforgeeks") || 
-      domain.includes("coursera") || domain.includes("udemy")) {
+
+  // Parent domain match (youtube.com → youtube)
+  const root = normalized.split(".")[0];
+  if (categoryMappings[root]) {
+    return categoryMappings[root];
+  }
+
+  // fallback logic
+  if (
+    normalized.includes("leetcode") ||
+    normalized.includes("geeksforgeeks") ||
+    normalized.includes("coursera") ||
+    normalized.includes("udemy")
+  ) {
     return "Learning";
   }
-  if (domain.includes("youtube") || domain.includes("instagram") || 
-      domain.includes("facebook") || domain.includes("twitter") || 
-      domain.includes("reddit") || domain.includes("tiktok")) {
+
+  if (
+    normalized.includes("youtube") ||
+    normalized.includes("instagram") ||
+    normalized.includes("facebook") ||
+    normalized.includes("twitter") ||
+    normalized.includes("reddit") ||
+    normalized.includes("tiktok")
+  ) {
     return "Distraction";
   }
-  if (domain.includes("github") || domain.includes("stackoverflow") || 
-      domain.includes("dev.to") || domain.includes("medium")) {
+
+  if (
+    normalized.includes("github") ||
+    normalized.includes("stackoverflow") ||
+    normalized.includes("dev.to") ||
+    normalized.includes("medium")
+  ) {
     return "Development";
   }
-  
+
   return "Other";
+}
+
+/* =========================================================
+   AUTHENTICATION
+========================================================= */
+async function loadAuthToken() {
+  return new Promise((resolve) => {
+    chrome.storage.local.get(["authToken"], (data) => {
+      authToken = data.authToken || null;
+      resolve(authToken);
+    });
+  });
+}
+
+function getAuthHeaders() {
+  if (!authToken) {
+    console.warn("No auth token available");
+    return { "Content-Type": "application/json" };
+  }
+  
+  return {
+    "Content-Type": "application/json",
+    "Authorization": `Bearer ${authToken}`
+  };
 }
 
 /* =========================================================
@@ -96,13 +155,29 @@ setInterval(flushBufferToStorage, 10000);
    CATEGORY SYNC FROM SERVER
 ========================================================= */
 async function syncCategoriesFromServer() {
+  await loadAuthToken();
+  
+  if (!authToken) {
+    console.warn("Cannot sync categories: No auth token");
+    return;
+  }
+  
   try {
-    const response = await fetch("http://localhost:5000/categories");
+    const response = await fetch("http://localhost:5000/categories", {
+      headers: getAuthHeaders()
+    });
+    
+    if (!response.ok) {
+      console.error("Failed to sync categories:", response.status);
+      return;
+    }
+    
     const mappings = await response.json();
     
     categoryMappings = {};
     mappings.forEach(m => {
-      categoryMappings[m.domain] = m.category;
+      const normalized = normalizeDomain(m.domain);
+      categoryMappings[normalized] = m.category;
     });
     
     console.log("✅ Categories synced:", categoryMappings);
@@ -112,8 +187,10 @@ async function syncCategoriesFromServer() {
 }
 
 // Sync categories on startup and every hour
-syncCategoriesFromServer();
-setInterval(syncCategoriesFromServer, 3600000); // 1 hour
+loadAuthToken().then(() => {
+  syncCategoriesFromServer();
+  setInterval(syncCategoriesFromServer, 3600000); // 1 hour
+});
 
 /* =========================================================
    TAB & IDLE EVENTS
@@ -165,8 +242,23 @@ function notify(message) {
    BLOCKING LOGIC
 ========================================================= */
 async function fetchBlockedSites() {
+  await loadAuthToken();
+  
+  if (!authToken) {
+    console.warn("Cannot fetch blocked sites: No auth token");
+    return [];
+  }
+  
   try {
-    const res = await fetch("http://localhost:5000/blocked-sites");
+    const res = await fetch("http://localhost:5000/blocked-sites", {
+      headers: getAuthHeaders()
+    });
+    
+    if (!res.ok) {
+      console.error("Failed to fetch blocked sites:", res.status);
+      return [];
+    }
+    
     const sites = await res.json();
     return sites || [];
   } catch (err) {
@@ -331,9 +423,16 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     }
 
     if (msg.type === "ADD_BLOCK_SITE") {
+      await loadAuthToken();
+      
+      if (!authToken) {
+        sendResponse({ success: false, error: "Not authenticated" });
+        return;
+      }
+      
       await fetch("http://localhost:5000/blocked-sites", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: getAuthHeaders(),
         body: JSON.stringify({ site: msg.site })
       });
 
@@ -343,6 +442,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     }
 
     if (msg.type === "SYNC_CATEGORIES") {
+      await syncCategoriesFromServer();
+      sendResponse({ success: true });
+      return;
+    }
+
+    if (msg.type === "AUTH_TOKEN_UPDATED") {
+      await loadAuthToken();
       await syncCategoriesFromServer();
       sendResponse({ success: true });
       return;
@@ -371,5 +477,16 @@ function syncFocusState() {
   });
   
   // Sync categories on startup
-  syncCategoriesFromServer();
+  loadAuthToken().then(() => {
+    syncCategoriesFromServer();
+  });
 }
+
+// Listen for auth token changes
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === "local" && changes.authToken) {
+    loadAuthToken().then(() => {
+      syncCategoriesFromServer();
+    });
+  }
+});
