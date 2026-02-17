@@ -23,42 +23,37 @@ mongoose.connect("mongodb+srv://d8softtradeinfotech_db_user:vm3ygevJHMa8HyIK@foc
   .then(() => console.log("✅ MongoDB connected"))
   .catch(err => console.error("❌ MongoDB error:", err));
 
-// ==================== SCHEMAS ====================
 
-// User Schema (Token-based authentication)
 const userSchema = new mongoose.Schema({
-  userId: { type: String, unique: true, required: true }, // This is the token
-  email: { type: String, default: null }, // Optional
+  userId: { type: String, unique: true, required: true },
+  email: { type: String, default: null },
   otpHash: { type: String, default: null },
   otpExpiry: { type: Date, default: null },
   createdAt: { type: Date, default: Date.now },
   lastValidated: { type: Date, default: Date.now }
 });
 
-// Blocked Sites (linked to user)
 const blockedSiteSchema = new mongoose.Schema({
   userId: { type: String, required: true },
   site: { type: String, required: true }
 });
 blockedSiteSchema.index({ userId: 1, site: 1 }, { unique: true });
 
-// Category Mappings
 const categoryMappingSchema = new mongoose.Schema({
   userId: { type: String, required: true },
   domain: { type: String, required: true },
-  category: { 
-    type: String, 
+  category: {
+    type: String,
     enum: ["Learning", "Development", "Distraction", "Other"],
-    required: true 
+    required: true
   },
   updatedAt: { type: Date, default: Date.now }
 });
 categoryMappingSchema.index({ userId: 1, domain: 1 }, { unique: true });
 
-// Daily Reflections
 const reflectionSchema = new mongoose.Schema({
   userId: { type: String, required: true },
-  date: { type: String, required: true }, // YYYY-MM-DD
+  date: { type: String, required: true },
   distractions: { type: String, default: "" },
   wentWell: { type: String, default: "" },
   improvements: { type: String, default: "" },
@@ -66,14 +61,13 @@ const reflectionSchema = new mongoose.Schema({
 });
 reflectionSchema.index({ userId: 1, date: 1 }, { unique: true });
 
-// User Preferences
 const preferencesSchema = new mongoose.Schema({
   userId: { type: String, unique: true, required: true },
   theme: { type: String, enum: ["light", "dark"], default: "light" },
-  accentColor: { 
-    type: String, 
-    enum: ["green", "blue", "purple", "red", "orange"], 
-    default: "blue" 
+  accentColor: {
+    type: String,
+    enum: ["green", "blue", "purple", "red", "orange"],
+    default: "blue"
   },
   updatedAt: { type: Date, default: Date.now }
 });
@@ -87,27 +81,23 @@ const Preferences = mongoose.model("Preferences", preferencesSchema);
 
 // ==================== UTILITY FUNCTIONS ====================
 
-// Generate secure random token
 function generateToken() {
-  return crypto.randomBytes(32).toString("hex"); // 64 character hex string
+  return crypto.randomBytes(32).toString("hex");
 }
 
-// Generate 6-digit OTP
 function generateOTP() {
   return crypto.randomInt(100000, 999999).toString();
 }
 
-// Hash OTP for storage
 function hashOTP(otp) {
   return crypto.createHash("sha256").update(otp).digest("hex");
 }
 
-// Send OTP via email
 async function sendOTPEmail(email, otp) {
   const mailOptions = {
-    from: process.env.EMAIL_USER || "khutetakunal@gmail.com",
+    from: process.env.EMAIL_USER || "your-email@gmail.com",
     to: email,
-    subject: "Focus Tracker - Password Recovery OTP",
+    subject: "Focus Tracker - Token Recovery OTP",
     html: `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
         <h2 style="color: #3b82f6;">Focus Tracker - Token Recovery</h2>
@@ -115,12 +105,8 @@ async function sendOTPEmail(email, otp) {
         <h1 style="background: #f1f5f9; padding: 20px; text-align: center; letter-spacing: 5px; color: #1e293b;">
           ${otp}
         </h1>
-        <p style="color: #64748b; font-size: 14px;">
-          This OTP will expire in 5 minutes.
-        </p>
-        <p style="color: #64748b; font-size: 14px;">
-          If you didn't request this, please ignore this email.
-        </p>
+        <p style="color: #64748b; font-size: 14px;">This OTP will expire in 5 minutes.</p>
+        <p style="color: #64748b; font-size: 14px;">If you didn't request this, please ignore this email.</p>
       </div>
     `
   };
@@ -137,7 +123,7 @@ async function sendOTPEmail(email, otp) {
 // ==================== AUTH MIDDLEWARE ====================
 async function authenticateToken(req, res, next) {
   const authHeader = req.headers["authorization"];
-  const token = authHeader && authHeader.split(" ")[1]; // Bearer TOKEN
+  const token = authHeader && authHeader.split(" ")[1];
 
   if (!token) {
     return res.status(401).json({ error: "Access token required" });
@@ -145,15 +131,13 @@ async function authenticateToken(req, res, next) {
 
   try {
     const user = await User.findOne({ userId: token });
-    
+
     if (!user) {
       return res.status(403).json({ error: "Invalid token" });
     }
 
-    // Attach userId to request
     req.userId = user.userId;
     req.userEmail = user.email;
-    
     next();
   } catch (error) {
     return res.status(500).json({ error: "Authentication failed" });
@@ -167,27 +151,24 @@ app.post("/auth/activate-token", async (req, res) => {
   const { email } = req.body;
 
   try {
-    // Generate new token
     const token = generateToken();
 
-    // Create user with token
-    const user = await User.create({
+    await User.create({
       userId: token,
-      email: email || null,
+      email: email ? email.toLowerCase() : null,
       createdAt: new Date(),
       lastValidated: new Date()
     });
 
-    // Create default preferences
     await Preferences.create({
       userId: token,
       theme: "light",
       accentColor: "blue"
     });
 
-    res.json({ 
+    res.json({
       success: true,
-      token: token,
+      token,
       message: "Token generated successfully. Store it safely!"
     });
   } catch (error) {
@@ -208,17 +189,13 @@ app.post("/auth/validate-token", async (req, res) => {
     const user = await User.findOne({ userId: token });
 
     if (!user) {
-      return res.status(403).json({ 
-        valid: false, 
-        error: "Invalid token" 
-      });
+      return res.status(403).json({ valid: false, error: "Invalid token" });
     }
 
-    // Update last validated time
     user.lastValidated = new Date();
     await user.save();
 
-    res.json({ 
+    res.json({
       valid: true,
       hasEmail: !!user.email,
       message: "Token validated successfully"
@@ -244,34 +221,31 @@ app.post("/auth/request-otp", async (req, res) => {
       return res.status(404).json({ error: "No account found with this email" });
     }
 
-    // Generate OTP
     const otp = generateOTP();
     const otpHash = hashOTP(otp);
-    const otpExpiry = new Date(Date.now() + 5 * 60 * 1000); // 5 minutes
+    const otpExpiry = new Date(Date.now() + 5 * 60 * 1000);
 
-    // Store hashed OTP
     user.otpHash = otpHash;
     user.otpExpiry = otpExpiry;
     await user.save();
 
-    // Send OTP via email
     const emailSent = await sendOTPEmail(email, otp);
 
     if (!emailSent) {
       return res.status(500).json({ error: "Failed to send OTP email" });
     }
 
-    res.json({ 
-      success: true,
-      message: "OTP sent to your email"
-    });
+    res.json({ success: true, message: "OTP sent to your email" });
   } catch (error) {
     console.error("OTP request error:", error);
     res.status(500).json({ error: "Failed to send OTP" });
   }
 });
 
-// Verify OTP and generate new token
+// BUG FIX: OTP verification - was calling updateMany({ userId: user.userId })
+// AFTER setting user.userId = newToken, so it searched for newToken (which
+// doesn't exist yet in related collections) instead of the old token.
+// Fixed by capturing the old userId BEFORE changing it.
 app.post("/auth/verify-otp", async (req, res) => {
   const { email, otp } = req.body;
 
@@ -286,7 +260,6 @@ app.post("/auth/verify-otp", async (req, res) => {
       return res.status(404).json({ error: "No account found" });
     }
 
-    // Check if OTP exists and hasn't expired
     if (!user.otpHash || !user.otpExpiry) {
       return res.status(400).json({ error: "No OTP request found. Please request a new OTP." });
     }
@@ -295,43 +268,43 @@ app.post("/auth/verify-otp", async (req, res) => {
       return res.status(400).json({ error: "OTP expired. Please request a new one." });
     }
 
-    // Verify OTP
     const otpHash = hashOTP(otp);
     if (otpHash !== user.otpHash) {
       return res.status(403).json({ error: "Invalid OTP" });
     }
 
-    // Generate new token
+    // ✅ CRITICAL: Capture the OLD userId BEFORE changing it
+    const oldUserId = user.userId;
     const newToken = generateToken();
 
-    // Update user with new token and clear OTP
+    // Update all related collections with old userId → new token
+    await Promise.all([
+      BlockedSite.updateMany(
+        { userId: oldUserId },
+        { $set: { userId: newToken } }
+      ),
+      CategoryMapping.updateMany(
+        { userId: oldUserId },
+        { $set: { userId: newToken } }
+      ),
+      Reflection.updateMany(
+        { userId: oldUserId },
+        { $set: { userId: newToken } }
+      ),
+      Preferences.updateMany(
+        { userId: oldUserId },
+        { $set: { userId: newToken } }
+      )
+    ]);
+
+    // Now update the user document itself
     user.userId = newToken;
     user.otpHash = null;
     user.otpExpiry = null;
     user.lastValidated = new Date();
     await user.save();
 
-    // Update all related data with new userId
-    await Promise.all([
-      BlockedSite.updateMany(
-        { userId: user.userId },
-        { $set: { userId: newToken } }
-      ),
-      CategoryMapping.updateMany(
-        { userId: user.userId },
-        { $set: { userId: newToken } }
-      ),
-      Reflection.updateMany(
-        { userId: user.userId },
-        { $set: { userId: newToken } }
-      ),
-      Preferences.updateMany(
-        { userId: user.userId },
-        { $set: { userId: newToken } }
-      )
-    ]);
-
-    res.json({ 
+    res.json({
       success: true,
       token: newToken,
       message: "New token generated successfully. Store it safely!"
@@ -342,15 +315,26 @@ app.post("/auth/verify-otp", async (req, res) => {
   }
 });
 
-// ==================== PROTECTED ROUTES ====================
+// ==================== LOGOUT ROUTE ====================
+// Clears server-side lastValidated so the token still exists but is marked stale.
+// The extension handles local storage cleanup via the LOGOUT message to background.js.
+app.post("/auth/logout", authenticateToken, async (req, res) => {
+  try {
+    await User.updateOne(
+      { userId: req.userId },
+      { $set: { lastValidated: null } }
+    );
+    res.json({ success: true, message: "Logged out successfully" });
+  } catch (error) {
+    console.error("Logout error:", error);
+    res.status(500).json({ error: "Logout failed" });
+  }
+});
 
-// ============ BLOCKED SITES ============
+// ==================== BLOCKED SITES ====================
 app.get("/blocked-sites", authenticateToken, async (req, res) => {
   try {
-    const sites = await BlockedSite.find(
-      { userId: req.userId }, 
-      { _id: 0, site: 1 }
-    );
+    const sites = await BlockedSite.find({ userId: req.userId }, { _id: 0, site: 1 });
     res.json(sites.map(s => s.site));
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -361,47 +345,67 @@ app.post("/blocked-sites", authenticateToken, async (req, res) => {
   const { site } = req.body;
   if (!site) return res.status(400).json({ error: "No site provided" });
 
-  const normalized = site.toLowerCase()
-    .replace(/^https?:\/\//, "")
-    .replace(/^www\./, "")
-    .split("/")[0];
+  // Robust normalization: handles bare domains, full URLs, paths, query strings
+  function normalizeDomainServer(raw) {
+    let s = raw.trim().toLowerCase();
+    if (!s.startsWith("http://") && !s.startsWith("https://")) {
+      s = "https://" + s;
+    }
+    try {
+      return new URL(s).hostname.replace(/^www\./, "");
+    } catch {
+      return raw.trim().toLowerCase()
+        .replace(/^https?:\/\//, "")
+        .replace(/^www\./, "")
+        .split("/")[0]
+        .split("?")[0]
+        .split(":")[0]; // remove port
+    }
+  }
+
+  const normalized = normalizeDomainServer(site);
+
+  if (!normalized || normalized.length < 2) {
+    return res.status(400).json({ error: "Invalid site URL" });
+  }
 
   try {
     await BlockedSite.updateOne(
-      { userId: req.userId, site: normalized }, 
-      { userId: req.userId, site: normalized }, 
+      { userId: req.userId, site: normalized },
+      { $set: { userId: req.userId, site: normalized } },
       { upsert: true }
     );
-    res.json({ success: true });
+    res.json({ success: true, site: normalized });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
 app.delete("/blocked-sites/:site", authenticateToken, async (req, res) => {
-  const siteParam = req.params.site;
+  const siteParam = decodeURIComponent(req.params.site);
   if (!siteParam) return res.status(400).json({ error: "No site provided" });
 
-  const normalized = siteParam.toLowerCase()
+  const normalized = siteParam
+    .toLowerCase()
     .replace(/^https?:\/\//, "")
     .replace(/^www\./, "")
     .split("/")[0];
 
   try {
-    await BlockedSite.deleteOne({ 
-      userId: req.userId, 
-      site: normalized 
-    });
+    await BlockedSite.deleteOne({ userId: req.userId, site: normalized });
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// ============ CATEGORY MAPPINGS ============
+// ==================== CATEGORY MAPPINGS ====================
 app.get("/categories", authenticateToken, async (req, res) => {
   try {
-    const mappings = await CategoryMapping.find({ userId: req.userId });
+    const mappings = await CategoryMapping.find(
+      { userId: req.userId },
+      { _id: 0, domain: 1, category: 1 }
+    );
     res.json(mappings);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -410,7 +414,7 @@ app.get("/categories", authenticateToken, async (req, res) => {
 
 app.post("/categories", authenticateToken, async (req, res) => {
   const { domain, category } = req.body;
-  
+
   if (!domain || !category) {
     return res.status(400).json({ error: "Domain and category required" });
   }
@@ -420,53 +424,57 @@ app.post("/categories", authenticateToken, async (req, res) => {
     return res.status(400).json({ error: "Invalid category" });
   }
 
-  try {
-    const normalized = domain
-      .toLowerCase()
-      .replace(/^https?:\/\//, "")
-      .replace(/^www\./, "")
-      .split("/")[0];
+  const normalized = domain
+    .toLowerCase()
+    .replace(/^https?:\/\//, "")
+    .replace(/^www\./, "")
+    .split("/")[0];
 
+  if (!normalized) {
+    return res.status(400).json({ error: "Invalid domain" });
+  }
+
+  try {
     await CategoryMapping.updateOne(
       { userId: req.userId, domain: normalized },
-      { 
-        userId: req.userId, 
-        domain: normalized, 
-        category, 
-        updatedAt: new Date() 
+      {
+        $set: {
+          userId: req.userId,
+          domain: normalized,
+          category,
+          updatedAt: new Date()
+        }
       },
       { upsert: true }
     );
 
-    res.json({ success: true });
+    res.json({ success: true, domain: normalized, category });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
 app.delete("/categories/:domain", authenticateToken, async (req, res) => {
+  const domain = decodeURIComponent(req.params.domain);
   try {
-    await CategoryMapping.deleteOne({ 
-      userId: req.userId, 
-      domain: req.params.domain 
-    });
+    await CategoryMapping.deleteOne({ userId: req.userId, domain });
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// ============ REFLECTIONS ============
+// ==================== REFLECTIONS ====================
 app.get("/reflections", authenticateToken, async (req, res) => {
   const { startDate, endDate } = req.query;
-  
+
   try {
-    let query = { userId: req.userId };
-    
+    const query = { userId: req.userId };
+
     if (startDate && endDate) {
       query.date = { $gte: startDate, $lte: endDate };
     }
-    
+
     const reflections = await Reflection.find(query).sort({ date: -1 });
     res.json(reflections);
   } catch (err) {
@@ -476,9 +484,9 @@ app.get("/reflections", authenticateToken, async (req, res) => {
 
 app.get("/reflections/:date", authenticateToken, async (req, res) => {
   try {
-    const reflection = await Reflection.findOne({ 
-      userId: req.userId, 
-      date: req.params.date 
+    const reflection = await Reflection.findOne({
+      userId: req.userId,
+      date: req.params.date
     });
     res.json(reflection || {});
   } catch (err) {
@@ -488,7 +496,7 @@ app.get("/reflections/:date", authenticateToken, async (req, res) => {
 
 app.post("/reflections", authenticateToken, async (req, res) => {
   const { date, distractions, wentWell, improvements } = req.body;
-  
+
   if (!date) {
     return res.status(400).json({ error: "Date required" });
   }
@@ -496,13 +504,15 @@ app.post("/reflections", authenticateToken, async (req, res) => {
   try {
     await Reflection.updateOne(
       { userId: req.userId, date },
-      { 
-        userId: req.userId,
-        date, 
-        distractions: distractions || "",
-        wentWell: wentWell || "",
-        improvements: improvements || "",
-        createdAt: new Date()
+      {
+        $set: {
+          userId: req.userId,
+          date,
+          distractions: distractions || "",
+          wentWell: wentWell || "",
+          improvements: improvements || "",
+          createdAt: new Date()
+        }
       },
       { upsert: true }
     );
@@ -512,11 +522,11 @@ app.post("/reflections", authenticateToken, async (req, res) => {
   }
 });
 
-// ============ PREFERENCES ============
+// ==================== PREFERENCES ====================
 app.get("/preferences", authenticateToken, async (req, res) => {
   try {
     let prefs = await Preferences.findOne({ userId: req.userId });
-    
+
     if (!prefs) {
       prefs = await Preferences.create({
         userId: req.userId,
@@ -524,7 +534,7 @@ app.get("/preferences", authenticateToken, async (req, res) => {
         accentColor: "blue"
       });
     }
-    
+
     res.json(prefs);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -533,14 +543,16 @@ app.get("/preferences", authenticateToken, async (req, res) => {
 
 app.post("/preferences", authenticateToken, async (req, res) => {
   const { theme, accentColor } = req.body;
-  
+
   try {
     await Preferences.updateOne(
       { userId: req.userId },
-      { 
-        theme: theme || "light",
-        accentColor: accentColor || "blue",
-        updatedAt: new Date()
+      {
+        $set: {
+          theme: theme || "light",
+          accentColor: accentColor || "blue",
+          updatedAt: new Date()
+        }
       },
       { upsert: true }
     );
@@ -551,7 +563,7 @@ app.post("/preferences", authenticateToken, async (req, res) => {
 });
 
 // ==================== SERVER ====================
-const PORT = 5000;
+const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
   console.log(`🚀 Server running on http://localhost:${PORT}`);
-}); 
+});

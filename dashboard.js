@@ -15,14 +15,15 @@ async function loadAuthToken() {
   });
 }
 
+// BUG FIX: Removed auto-redirect from getAuthHeaders. Redirecting inside a
+// helper function caused infinite loops when called during background API calls
+// and broke non-auth-sensitive operations. Auth guard is now only in DOMContentLoaded.
 function getAuthHeaders() {
   if (!authToken) {
     console.error("No auth token available");
-    // Redirect to auth page
-    window.location.href = "auth.html";
     return { "Content-Type": "application/json" };
   }
-  
+
   return {
     "Content-Type": "application/json",
     "Authorization": `Bearer ${authToken}`
@@ -33,24 +34,23 @@ function getAuthHeaders() {
    INITIALIZATION
 ========================= */
 document.addEventListener("DOMContentLoaded", async () => {
-  // Load auth token first
   await loadAuthToken();
-  
+
   if (!authToken) {
     window.location.href = "auth.html";
     return;
   }
-  
+
   await loadPreferences();
   await loadCategories();
-  
+
   initEventListeners();
   initFocusControls();
-  
+
   loadDashboard();
   loadReflection();
   loadWeeklySummary();
-  
+
   setInterval(loadDashboard, 10000);
 });
 
@@ -62,47 +62,48 @@ async function loadPreferences() {
     const res = await fetch("http://localhost:5000/preferences", {
       headers: getAuthHeaders()
     });
+
+    if (!res.ok) throw new Error("Failed to load preferences");
+
     const prefs = await res.json();
-    
+
     currentTheme = prefs.theme || "light";
     currentAccent = prefs.accentColor || "blue";
-    
+
     applyTheme(currentTheme, currentAccent);
   } catch (err) {
     console.error("Failed to load preferences:", err);
+    applyTheme("light", "blue");
   }
 }
 
 function applyTheme(theme, accent) {
   document.body.setAttribute("data-theme", theme);
   document.body.setAttribute("data-accent", accent);
-  
-  document.getElementById("themeSelect").value = theme;
-  
-  // Highlight active color
+
+  const themeSelect = document.getElementById("themeSelect");
+  if (themeSelect) themeSelect.value = theme;
+
   document.querySelectorAll(".color-option").forEach(btn => {
-    btn.classList.remove("active");
-    if (btn.dataset.color === accent) {
-      btn.classList.add("active");
-    }
+    btn.classList.toggle("active", btn.dataset.color === accent);
   });
 }
 
 async function saveSettings() {
   const theme = document.getElementById("themeSelect").value;
   const accent = document.querySelector(".color-option.active")?.dataset.color || "blue";
-  
+
   try {
     await fetch("http://localhost:5000/preferences", {
       method: "POST",
       headers: getAuthHeaders(),
       body: JSON.stringify({ theme, accentColor: accent })
     });
-    
+
     currentTheme = theme;
     currentAccent = accent;
     applyTheme(theme, accent);
-    
+
     closeSettings();
     showNotification("Settings saved!", "success");
   } catch (err) {
@@ -125,15 +126,42 @@ function showNotification(message, type = "success") {
     border-radius: 12px;
     box-shadow: 0 4px 12px rgba(0,0,0,0.2);
     z-index: 10000;
+    font-family: inherit;
+    font-size: 14px;
+    font-weight: 500;
     animation: slideIn 0.3s ease;
   `;
-  
+
   document.body.appendChild(notification);
-  
+
   setTimeout(() => {
-    notification.style.animation = "slideOut 0.3s ease";
+    notification.style.opacity = "0";
+    notification.style.transition = "opacity 0.3s ease";
     setTimeout(() => notification.remove(), 300);
   }, 3000);
+}
+
+/* =========================
+   LOGOUT
+========================= */
+async function logout() {
+  if (!confirm("Are you sure you want to log out?")) return;
+
+  try {
+    // Notify the server (best-effort, don't block on failure)
+    await fetch("http://localhost:5000/auth/logout", {
+      method: "POST",
+      headers: getAuthHeaders()
+    }).catch(() => {});
+  } catch (_) {}
+
+  // Tell background script to clear its state
+  chrome.runtime.sendMessage({ type: "LOGOUT" });
+
+  // Clear local storage
+  chrome.storage.local.remove(["authToken", "lastValidated"], () => {
+    window.location.href = "auth.html";
+  });
 }
 
 /* =========================
@@ -144,36 +172,51 @@ async function loadCategories() {
     const res = await fetch("http://localhost:5000/categories", {
       headers: getAuthHeaders()
     });
+
+    if (!res.ok) throw new Error("Failed to load categories");
+
     const categories = await res.json();
-    
+
     const list = document.getElementById("categoryList");
     list.innerHTML = "";
-    
+
+    if (!categories || categories.length === 0) {
+      list.innerHTML = '<li style="color: var(--text-secondary); font-size: 13px; text-align: center; padding: 8px;">No custom categories yet</li>';
+      return;
+    }
+
     categories.forEach(cat => {
       const li = document.createElement("li");
-      
+      li.style.cssText = "display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--border);";
+
       const info = document.createElement("div");
-      info.style.display = "flex";
-      info.style.gap = "10px";
-      info.style.alignItems = "center";
-      
+      info.style.cssText = "display: flex; gap: 10px; align-items: center;";
+
       const domain = document.createElement("span");
       domain.className = "domain";
       domain.textContent = cat.domain;
-      
+      domain.style.fontWeight = "500";
+
       const badge = document.createElement("span");
       badge.className = "category-badge";
       badge.textContent = cat.category;
-      badge.style.background = getCategoryColor(cat.category);
-      badge.style.color = "white";
-      
+      badge.style.cssText = `
+        background: ${getCategoryColor(cat.category)};
+        color: white;
+        padding: 2px 8px;
+        border-radius: 999px;
+        font-size: 11px;
+        font-weight: 600;
+      `;
+
       info.appendChild(domain);
       info.appendChild(badge);
-      
+
       const deleteBtn = document.createElement("button");
       deleteBtn.textContent = "❌";
+      deleteBtn.style.cssText = "background: none; border: none; cursor: pointer; font-size: 14px;";
       deleteBtn.onclick = () => deleteCategory(cat.domain);
-      
+
       li.appendChild(info);
       li.appendChild(deleteBtn);
       list.appendChild(li);
@@ -194,28 +237,48 @@ function getCategoryColor(category) {
 }
 
 async function addCategory() {
-  const domain = document.getElementById("categoryDomain").value.trim();
-  const category = document.getElementById("categorySelect").value;
-  
+  const domainInput = document.getElementById("categoryDomain");
+  const categorySelect = document.getElementById("categorySelect");
+  const domain = domainInput.value.trim();
+  const category = categorySelect.value;
+
   if (!domain) {
     showNotification("Please enter a domain", "error");
     return;
   }
-  
+
+  // Strip protocol and www if user paste a full URL
+  const normalized = domain
+    .toLowerCase()
+    .replace(/^https?:\/\//, "")
+    .replace(/^www\./, "")
+    .split("/")[0];
+
+  if (!normalized) {
+    showNotification("Invalid domain", "error");
+    return;
+  }
+
   try {
-    await fetch("http://localhost:5000/categories", {
+    const res = await fetch("http://localhost:5000/categories", {
       method: "POST",
       headers: getAuthHeaders(),
-      body: JSON.stringify({ domain, category })
+      body: JSON.stringify({ domain: normalized, category })
     });
-    
-    document.getElementById("categoryDomain").value = "";
-    
-    // Trigger background sync
+
+    if (!res.ok) {
+      const err = await res.json();
+      showNotification(err.error || "Failed to add category", "error");
+      return;
+    }
+
+    domainInput.value = "";
+
+    // BUG FIX: Sync to background so in-memory categoryMappings updates immediately
     chrome.runtime.sendMessage({ type: "SYNC_CATEGORIES" });
-    
+
     await loadCategories();
-    showNotification("Category added!", "success");
+    showNotification(`${normalized} → ${category} saved!`, "success");
   } catch (err) {
     console.error("Failed to add category:", err);
     showNotification("Failed to add category", "error");
@@ -224,17 +287,21 @@ async function addCategory() {
 
 async function deleteCategory(domain) {
   try {
-    await fetch(`http://localhost:5000/categories/${encodeURIComponent(domain)}`, {
+    const res = await fetch(`http://localhost:5000/categories/${encodeURIComponent(domain)}`, {
       method: "DELETE",
       headers: getAuthHeaders()
     });
-    
+
+    if (!res.ok) throw new Error("Delete failed");
+
+    // Sync background so it drops the mapping from memory
     chrome.runtime.sendMessage({ type: "SYNC_CATEGORIES" });
-    
+
     await loadCategories();
     showNotification("Category removed!", "success");
   } catch (err) {
     console.error("Failed to delete category:", err);
+    showNotification("Failed to remove category", "error");
   }
 }
 
@@ -247,19 +314,22 @@ function getTodayKey() {
 
 async function loadReflection() {
   const today = getTodayKey();
-  
+
   try {
     const res = await fetch(`http://localhost:5000/reflections/${today}`, {
       headers: getAuthHeaders()
     });
+
+    if (!res.ok) return;
+
     const reflection = await res.json();
-    
+
     if (reflection && reflection.date) {
-      document.getElementById("reflectionDistractions").value = 
+      document.getElementById("reflectionDistractions").value =
         reflection.distractions || "";
-      document.getElementById("reflectionWentWell").value = 
+      document.getElementById("reflectionWentWell").value =
         reflection.wentWell || "";
-      document.getElementById("reflectionImprovements").value = 
+      document.getElementById("reflectionImprovements").value =
         reflection.improvements || "";
     }
   } catch (err) {
@@ -272,26 +342,20 @@ async function saveReflection() {
   const distractions = document.getElementById("reflectionDistractions").value;
   const wentWell = document.getElementById("reflectionWentWell").value;
   const improvements = document.getElementById("reflectionImprovements").value;
-  
+
   try {
-    await fetch("http://localhost:5000/reflections", {
+    const res = await fetch("http://localhost:5000/reflections", {
       method: "POST",
       headers: getAuthHeaders(),
-      body: JSON.stringify({
-        date: today,
-        distractions,
-        wentWell,
-        improvements
-      })
+      body: JSON.stringify({ date: today, distractions, wentWell, improvements })
     });
-    
+
+    if (!res.ok) throw new Error("Save failed");
+
     const savedMsg = document.getElementById("reflectionSaved");
     savedMsg.style.display = "block";
-    
-    setTimeout(() => {
-      savedMsg.style.display = "none";
-    }, 3000);
-    
+    setTimeout(() => { savedMsg.style.display = "none"; }, 3000);
+
     showNotification("Reflection saved!", "success");
   } catch (err) {
     console.error("Failed to save reflection:", err);
@@ -306,44 +370,43 @@ async function loadWeeklySummary() {
   const today = new Date();
   const weekAgo = new Date(today);
   weekAgo.setDate(weekAgo.getDate() - 7);
-  
+
   const startDate = weekAgo.toISOString().split("T")[0];
   const endDate = today.toISOString().split("T")[0];
-  
+
   try {
     const res = await fetch(
       `http://localhost:5000/reflections?startDate=${startDate}&endDate=${endDate}`,
       { headers: getAuthHeaders() }
     );
+
+    if (!res.ok) throw new Error("Failed to load summary");
+
     const reflections = await res.json();
-    
     const container = document.getElementById("weeklySummary");
-    
+
     if (!reflections || reflections.length === 0) {
-      container.innerHTML = `
-        <p class="loading-text">No reflections yet. Start journaling!</p>
-      `;
+      container.innerHTML = `<p class="loading-text">No reflections yet. Start journaling!</p>`;
       return;
     }
-    
+
     container.innerHTML = "";
-    
+
     reflections.slice(0, 5).forEach(ref => {
       const item = document.createElement("div");
       item.className = "summary-item";
-      
+
       const date = document.createElement("div");
       date.className = "summary-date";
       date.textContent = formatDate(ref.date);
-      
+
       const content = document.createElement("div");
-      content.style.fontSize = "13px";
-      content.style.color = "var(--text-secondary)";
-      content.innerHTML = `
-        ${ref.wentWell ? `✅ ${ref.wentWell.substring(0, 80)}...` : ""}
-        ${ref.distractions ? `<br>⚠️ ${ref.distractions.substring(0, 60)}...` : ""}
-      `;
-      
+      content.style.cssText = "font-size: 13px; color: var(--text-secondary); margin-top: 4px;";
+      content.innerHTML = [
+        ref.wentWell ? `✅ ${ref.wentWell.substring(0, 80)}${ref.wentWell.length > 80 ? "..." : ""}` : "",
+        ref.distractions ? `<br>⚠️ ${ref.distractions.substring(0, 60)}${ref.distractions.length > 60 ? "..." : ""}` : ""
+      ].filter(Boolean).join("");
+
       item.appendChild(date);
       item.appendChild(content);
       container.appendChild(item);
@@ -354,22 +417,20 @@ async function loadWeeklySummary() {
 }
 
 function formatDate(dateStr) {
-  const date = new Date(dateStr);
-  return date.toLocaleDateString("en-US", { 
-    month: "short", 
-    day: "numeric" 
-  });
+  // BUG FIX: Adding T00:00:00 prevents timezone offset causing wrong day display
+  const date = new Date(dateStr + "T00:00:00");
+  return date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
 }
 
 /* =========================
    UTILS
 ========================= */
 function formatTime(ms) {
-  if (typeof ms !== "number" || isNaN(ms)) return "0 sec";
+  if (typeof ms !== "number" || isNaN(ms) || ms <= 0) return "0 sec";
   const seconds = Math.floor(ms / 1000);
   const minutes = Math.floor(seconds / 60);
   const hours = Math.floor(minutes / 60);
-  
+
   if (hours > 0) return `${hours}h ${minutes % 60}m`;
   if (minutes > 0) return `${minutes} min`;
   return `${seconds} sec`;
@@ -382,8 +443,7 @@ function getDateKey(offset = 0) {
 }
 
 function calculateProductivity(categoryTime) {
-  const productive =
-    (categoryTime.Learning || 0) + (categoryTime.Development || 0);
+  const productive = (categoryTime.Learning || 0) + (categoryTime.Development || 0);
   const negative = categoryTime.Distraction || 0;
   const total = productive + negative;
   return total === 0 ? 0 : Math.round((productive / total) * 100);
@@ -406,50 +466,39 @@ function loadDashboard() {
 
   chrome.storage.local.get(["timeData"], (res) => {
     const rawData = res.timeData || {};
-    const isDateBased = Object.keys(rawData)[0]?.includes("-");
+
+    // Support both old (non-date-keyed) and new (date-keyed) storage formats
+    const isDateBased = Object.keys(rawData).some(k => /^\d{4}-\d{2}-\d{2}$/.test(k));
     const allData = isDateBased ? rawData : { [getDateKey(0)]: rawData };
 
     let days = [];
     if (range === "today") days = [getDateKey(0)];
-    if (range === "yesterday") days = [getDateKey(1)];
-    if (range === "7days")
-      days = Array.from({ length: 7 }, (_, i) => getDateKey(i));
-    if (range === "30days")
-      days = Array.from({ length: 30 }, (_, i) => getDateKey(i));
+    else if (range === "yesterday") days = [getDateKey(1)];
+    else if (range === "7days") days = Array.from({ length: 7 }, (_, i) => getDateKey(i));
+    else if (range === "30days") days = Array.from({ length: 30 }, (_, i) => getDateKey(i));
 
-    const categoryTime = {
-      Learning: 0,
-      Distraction: 0,
-      Development: 0,
-      Other: 0
-    };
-
+    const categoryTime = { Learning: 0, Distraction: 0, Development: 0, Other: 0 };
     const siteMap = {};
 
     days.forEach(day => {
       const dayData = allData[day] || {};
       for (const site in dayData) {
         const entry = dayData[site];
-        const time = entry.time || 0;
-        const category = entry.category || "Other";
-        categoryTime[category] += time;
+        const time = typeof entry === "number" ? entry : (entry.time || 0);
+        const category = (typeof entry === "object" && entry.category) ? entry.category : "Other";
+
+        categoryTime[category] = (categoryTime[category] || 0) + time;
         siteMap[site] = (siteMap[site] || 0) + time;
       }
     });
 
-    const totalTime = Object.values(categoryTime)
-      .reduce((a, b) => a + b, 0);
+    const totalTime = Object.values(categoryTime).reduce((a, b) => a + b, 0);
 
-    document.getElementById("totalTime").textContent =
-      formatTime(totalTime);
-    document.getElementById("learningTime").textContent =
-      formatTime(categoryTime.Learning);
-    document.getElementById("distractionTime").textContent =
-      formatTime(categoryTime.Distraction);
-    document.getElementById("developmentTime").textContent =
-      formatTime(categoryTime.Development);
-    document.getElementById("otherTime").textContent =
-      formatTime(categoryTime.Other);
+    document.getElementById("totalTime").textContent = formatTime(totalTime);
+    document.getElementById("learningTime").textContent = formatTime(categoryTime.Learning);
+    document.getElementById("distractionTime").textContent = formatTime(categoryTime.Distraction);
+    document.getElementById("developmentTime").textContent = formatTime(categoryTime.Development);
+    document.getElementById("otherTime").textContent = formatTime(categoryTime.Other);
 
     const score = calculateProductivity(categoryTime);
     document.getElementById("productivityScore").textContent = score;
@@ -458,17 +507,20 @@ function loadDashboard() {
     const ul = document.getElementById("topSites");
     ul.innerHTML = "";
 
-    Object.entries(siteMap)
+    const sorted = Object.entries(siteMap)
+      .filter(([, time]) => time > 0)
       .sort((a, b) => b[1] - a[1])
-      .slice(0, 8)
-      .forEach(([site, time]) => {
+      .slice(0, 8);
+
+    if (sorted.length === 0) {
+      ul.innerHTML = '<li style="color: var(--text-secondary); font-size: 13px;">No data for this period</li>';
+    } else {
+      sorted.forEach(([site, time]) => {
         const li = document.createElement("li");
-        li.innerHTML = `
-          <span>${site}</span>
-          <span style="font-weight:600;">${formatTime(time)}</span>
-        `;
+        li.innerHTML = `<span>${site}</span><span style="font-weight:600;">${formatTime(time)}</span>`;
         ul.appendChild(li);
       });
+    }
 
     renderChart(categoryTime);
   });
@@ -481,8 +533,27 @@ function renderChart(categoryTime) {
   const canvas = document.getElementById("timeChart");
   if (!canvas || typeof Chart === "undefined") return;
 
+  const data = [
+    Math.floor(categoryTime.Learning / 60000),
+    Math.floor(categoryTime.Distraction / 60000),
+    Math.floor(categoryTime.Development / 60000),
+    Math.floor(categoryTime.Other / 60000)
+  ];
+
+  // Don't render chart if all values are 0
+  const hasData = data.some(v => v > 0);
+
   const ctx = canvas.getContext("2d");
   if (timeChartInstance) timeChartInstance.destroy();
+
+  if (!hasData) {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = "#94a3b8";
+    ctx.textAlign = "center";
+    ctx.font = "14px sans-serif";
+    ctx.fillText("No data yet", canvas.width / 2, canvas.height / 2);
+    return;
+  }
 
   timeChartInstance = new Chart(ctx, {
     type: "doughnut",
@@ -490,18 +561,8 @@ function renderChart(categoryTime) {
       labels: ["📚 Learning", "⚠️ Distraction", "💻 Development", "📦 Other"],
       datasets: [{
         label: "Time (minutes)",
-        data: [
-          Math.floor(categoryTime.Learning / 60000),
-          Math.floor(categoryTime.Distraction / 60000),
-          Math.floor(categoryTime.Development / 60000),
-          Math.floor(categoryTime.Other / 60000)
-        ],
-        backgroundColor: [
-          "#22c55e",
-          "#ef4444",
-          "#3b82f6",
-          "#f97316"
-        ],
+        data,
+        backgroundColor: ["#22c55e", "#ef4444", "#3b82f6", "#f97316"],
         borderWidth: 0
       }]
     },
@@ -511,10 +572,7 @@ function renderChart(categoryTime) {
       plugins: {
         legend: {
           position: "bottom",
-          labels: {
-            padding: 15,
-            font: { size: 13 }
-          }
+          labels: { padding: 15, font: { size: 13 } }
         }
       }
     }
@@ -529,47 +587,45 @@ function updateFocusButtons(isOn, locked = false) {
   const stopBtn = document.getElementById("stopFocus");
   const focusBtn = document.getElementById("focusBtn");
   const statusInd = document.querySelector(".status-indicator");
-  
-  startBtn.disabled = isOn;
-  stopBtn.disabled = !isOn || locked;
-  
-  focusBtn.textContent = locked ? "FOCUS LOCKED" : 
-                         isOn ? "FOCUS MODE ON" : "FOCUS MODE OFF";
-  
-  if (isOn) {
-    statusInd.classList.add("active");
-  } else {
-    statusInd.classList.remove("active");
+
+  if (startBtn) startBtn.disabled = isOn;
+  if (stopBtn) stopBtn.disabled = !isOn || locked;
+
+  if (focusBtn) {
+    focusBtn.textContent = locked ? "🔒 FOCUS LOCKED" :
+      isOn ? "✅ FOCUS MODE ON" : "⭕ FOCUS MODE OFF";
+  }
+
+  if (statusInd) {
+    statusInd.classList.toggle("active", isOn);
   }
 }
 
 function initFocusControls() {
-  document.getElementById("startFocus").addEventListener("click", () => {
-    chrome.runtime.sendMessage({
-      type: "FOCUS_ON",
-      duration: 25,
-      hard: false
+  document.getElementById("startFocus")?.addEventListener("click", () => {
+    chrome.runtime.sendMessage({ type: "FOCUS_ON", duration: 25, hard: false }, (res) => {
+      if (res?.success) showNotification("Focus mode started!", "success");
     });
   });
 
-  document.getElementById("hardFocus").addEventListener("click", () => {
+  document.getElementById("hardFocus")?.addEventListener("click", () => {
     const input = prompt("Hard Focus duration (minutes, min 5):", "25");
     const minutes = parseInt(input, 10);
 
     if (isNaN(minutes) || minutes < 5) {
-      alert("Minimum hard focus time is 5 minutes");
+      showNotification("Minimum hard focus time is 5 minutes", "error");
       return;
     }
 
-    chrome.runtime.sendMessage({
-      type: "FOCUS_ON",
-      duration: minutes,
-      hard: true
+    chrome.runtime.sendMessage({ type: "FOCUS_ON", duration: minutes, hard: true }, (res) => {
+      if (res?.success) showNotification(`Hard focus started for ${minutes} minutes!`, "success");
     });
   });
 
-  document.getElementById("stopFocus").addEventListener("click", () => {
-    chrome.runtime.sendMessage({ type: "FOCUS_OFF" });
+  document.getElementById("stopFocus")?.addEventListener("click", () => {
+    chrome.runtime.sendMessage({ type: "FOCUS_OFF" }, (res) => {
+      if (res?.success) showNotification("Focus mode stopped", "success");
+    });
   });
 
   chrome.runtime.sendMessage(
@@ -581,51 +637,106 @@ function initFocusControls() {
 /* =========================
    BLOCKED SITES
 ========================= */
-async function loadBlockedSites() {
+
+// Normalize any input (full URL, with/without www, just domain name) to bare domain
+function normalizeSiteInput(raw) {
+  let s = raw.trim().toLowerCase();
+  // Add protocol so URL() can parse it if missing
+  if (!s.startsWith("http://") && !s.startsWith("https://")) {
+    s = "https://" + s;
+  }
   try {
+    return new URL(s).hostname.replace(/^www\./, "");
+  } catch {
+    // Fallback: strip manually
+    return raw.trim().toLowerCase()
+      .replace(/^https?:\/\//, "")
+      .replace(/^www\./, "")
+      .split("/")[0]
+      .split("?")[0];
+  }
+}
+
+async function loadBlockedSites() {
+  const list = document.getElementById("blockedSitesList");
+
+  try {
+    // STEP 1 — Fetch sites from server (awaited properly)
     const res = await fetch("http://localhost:5000/blocked-sites", {
       headers: getAuthHeaders()
     });
+
+    if (!res.ok) throw new Error(`Server returned ${res.status}`);
+
     const sites = await res.json();
 
-    chrome.runtime.sendMessage({ type: "GET_FOCUS_STATUS" }, (statusRes) => {
-      const focusOn = statusRes?.status || false;
+    // STEP 2 — Render immediately with sites data. Do NOT nest this inside
+    // sendMessage callback — the MV3 service worker may be sleeping and the
+    // callback might never fire, leaving the list blank forever.
+    list.innerHTML = "";
 
-      const list = document.getElementById("blockedSitesList");
-      list.innerHTML = "";
-      
+    if (!Array.isArray(sites) || sites.length === 0) {
+      list.innerHTML = '<li style="color:var(--text-secondary);font-size:13px;text-align:center;padding:8px;">No blocked sites yet</li>';
+    } else {
       sites.forEach(site => {
         const li = document.createElement("li");
-        
+        li.style.cssText = "display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--border);";
+
         const span = document.createElement("span");
         span.textContent = site;
+        span.style.fontSize = "13px";
 
         const removeBtn = document.createElement("button");
         removeBtn.textContent = "❌";
-        removeBtn.disabled = focusOn;
-        removeBtn.title = focusOn ? "Cannot remove while Focus Mode is ON" : "Remove site";
+        removeBtn.dataset.site = site;
+        removeBtn.style.cssText = "background:none;border:none;cursor:pointer;font-size:14px;padding:2px 6px;";
 
         removeBtn.addEventListener("click", async () => {
-          if (focusOn) return;
+          // Check focus state at click time — not at render time
+          chrome.runtime.sendMessage({ type: "GET_FOCUS_STATUS" }, async (statusRes) => {
+            const focusOn = statusRes?.status || false;
+            if (focusOn) {
+              showNotification("Stop Focus Mode first to remove sites", "error");
+              return;
+            }
 
-          try {
-            await fetch(`http://localhost:5000/blocked-sites/${encodeURIComponent(site)}`, {
-              method: "DELETE",
-              headers: getAuthHeaders()
-            });
-            loadBlockedSites();
-          } catch (err) {
-            console.error("Failed to remove site", err);
-          }
+            try {
+              const delRes = await fetch(
+                `http://localhost:5000/blocked-sites/${encodeURIComponent(site)}`,
+                { method: "DELETE", headers: getAuthHeaders() }
+              );
+
+              if (!delRes.ok) throw new Error("Delete failed");
+
+              showNotification(`${site} removed`, "success");
+              loadBlockedSites();
+            } catch (err) {
+              console.error("Failed to remove site", err);
+              showNotification("Failed to remove site", "error");
+            }
+          });
         });
 
         li.appendChild(span);
         li.appendChild(removeBtn);
         list.appendChild(li);
       });
+    }
+
+    // STEP 3 — Separately update button disabled state based on focus status
+    // (best-effort — if service worker is slow, buttons still show, just not disabled)
+    chrome.runtime.sendMessage({ type: "GET_FOCUS_STATUS" }, (statusRes) => {
+      const focusOn = statusRes?.status || false;
+      list.querySelectorAll("button[data-site]").forEach(btn => {
+        btn.disabled = focusOn;
+        btn.title = focusOn ? "Stop Focus Mode to remove sites" : "Remove site";
+        btn.style.opacity = focusOn ? "0.4" : "1";
+      });
     });
+
   } catch (err) {
-    console.error("Failed to load blocked sites", err);
+    console.error("Failed to load blocked sites:", err);
+    list.innerHTML = '<li style="color:#ef4444;font-size:13px;padding:8px;">Failed to load. Check server connection.</li>';
   }
 }
 
@@ -647,6 +758,7 @@ function downloadFile(content, filename, type) {
 ========================= */
 function openSettings() {
   document.getElementById("settingsModal").classList.add("active");
+  loadCategories(); // Refresh categories when settings opens
 }
 
 function closeSettings() {
@@ -660,12 +772,17 @@ function initEventListeners() {
   // Settings
   document.getElementById("settingsBtn")?.addEventListener("click", openSettings);
   document.querySelector(".close-btn")?.addEventListener("click", closeSettings);
-  
+
+  // Close modal on backdrop click
+  document.getElementById("settingsModal")?.addEventListener("click", (e) => {
+    if (e.target === document.getElementById("settingsModal")) closeSettings();
+  });
+
   // Theme
   document.getElementById("themeSelect")?.addEventListener("change", (e) => {
     applyTheme(e.target.value, currentAccent);
   });
-  
+
   // Color options
   document.querySelectorAll(".color-option").forEach(btn => {
     btn.addEventListener("click", () => {
@@ -674,37 +791,95 @@ function initEventListeners() {
       applyTheme(currentTheme, btn.dataset.color);
     });
   });
-  
+
+  // Save settings
+  document.querySelector(".save-settings-btn")?.addEventListener("click", saveSettings);
+
+  // Logout button
+  document.getElementById("logoutBtn")?.addEventListener("click", logout);
+
   // Categories
   document.getElementById("addCategoryBtn")?.addEventListener("click", addCategory);
-  
+
+  // Allow Enter key in category domain input
+  document.getElementById("categoryDomain")?.addEventListener("keypress", (e) => {
+    if (e.key === "Enter") addCategory();
+  });
+
   // Reflection
   document.getElementById("saveReflection")?.addEventListener("click", saveReflection);
-  
+
   // Dashboard
   document.getElementById("rangeSelect")?.addEventListener("change", loadDashboard);
   document.getElementById("refreshBtn")?.addEventListener("click", loadDashboard);
-  
-  // Blocked sites
-  document.getElementById("addBlockSite")?.addEventListener("click", () => {
-    const input = document.getElementById("blockSiteInput");
-    const site = input.value.trim();
-    if (!site) return;
 
-    chrome.runtime.sendMessage({ type: "ADD_BLOCK_SITE", site }, res => {
-      if (res?.success) {
-        input.value = "";
-        loadBlockedSites();
+  // Blocked sites - add
+  // CRITICAL FIX: POST directly to server instead of going through sendMessage.
+  // sendMessage relies on the MV3 service worker being awake. If it's sleeping,
+  // the callback never fires → site appears saved (toast shows) but list never
+  // reloads → looks like data was lost on refresh.
+  async function addBlockedSite() {
+    const input = document.getElementById("blockSiteInput");
+    const addBtn = document.getElementById("addBlockSite");
+    const raw = input.value.trim();
+
+    if (!raw) {
+      showNotification("Please enter a domain", "error");
+      return;
+    }
+
+    const normalized = normalizeSiteInput(raw);
+    if (!normalized || normalized.length < 2 || !normalized.includes(".")) {
+      showNotification("Enter a valid domain like youtube.com", "error");
+      return;
+    }
+
+    addBtn.disabled = true;
+    addBtn.textContent = "Saving…";
+
+    try {
+      const res = await fetch("http://localhost:5000/blocked-sites", {
+        method: "POST",
+        headers: getAuthHeaders(),
+        body: JSON.stringify({ site: normalized })
+      });
+
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.error || `Server error (${res.status})`);
       }
-    });
+
+      input.value = "";
+      showNotification(`✅ ${normalized} added to block list`, "success");
+
+      // Reload list NOW — confirmed save, no race condition
+      await loadBlockedSites();
+
+      // Tell background to re-apply declarativeNetRequest rules (best-effort)
+      chrome.runtime.sendMessage({ type: "ADD_BLOCK_SITE", site: normalized });
+
+    } catch (err) {
+      console.error("Failed to add blocked site:", err);
+      showNotification(err.message || "Failed to add site", "error");
+    } finally {
+      addBtn.disabled = false;
+      addBtn.textContent = "Add";
+    }
+  }
+
+  document.getElementById("addBlockSite")?.addEventListener("click", addBlockedSite);
+
+  // Allow Enter key in block site input
+  document.getElementById("blockSiteInput")?.addEventListener("keypress", (e) => {
+    if (e.key === "Enter") addBlockedSite();
   });
-  
+
   // Export
   document.getElementById("exportJsonBtn")?.addEventListener("click", () => {
     chrome.storage.local.get(["timeData"], (res) => {
       downloadFile(
         JSON.stringify(res.timeData || {}, null, 2),
-        "focus-tracker-data.json",
+        `focus-tracker-${getTodayKey()}.json`,
         "application/json"
       );
     });
@@ -713,27 +888,31 @@ function initEventListeners() {
   document.getElementById("exportCsvBtn")?.addEventListener("click", () => {
     chrome.storage.local.get(["timeData"], (res) => {
       const timeData = res.timeData || {};
-      let csv = "Date,Website,Category,Time(ms)\n";
+      let csv = "Date,Website,Category,Time(ms),Time(minutes)\n";
       for (const date in timeData) {
         for (const site in timeData[date]) {
           const e = timeData[date][site];
-          csv += `${date},${site},${e.category},${e.time}\n`;
+          const ms = typeof e === "number" ? e : (e.time || 0);
+          const cat = typeof e === "object" ? (e.category || "Other") : "Other";
+          csv += `${date},${site},${cat},${ms},${Math.round(ms / 60000 * 10) / 10}\n`;
         }
       }
-      downloadFile(csv, "focus-tracker-data.csv", "text/csv");
+      downloadFile(csv, `focus-tracker-${getTodayKey()}.csv`, "text/csv");
     });
   });
-  
-  // Load blocked sites
+
+  // Load blocked sites on init
   loadBlockedSites();
-  
-  // Listen for storage changes
+
+  // Listen for focus state changes
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area === "local" && (changes.focusMode || changes.focusLockUntil)) {
       chrome.runtime.sendMessage(
         { type: "GET_FOCUS_STATUS" },
         res => updateFocusButtons(res?.status, res?.locked)
       );
+      // Refresh blocked list to update button states
+      loadBlockedSites();
     }
   });
 }

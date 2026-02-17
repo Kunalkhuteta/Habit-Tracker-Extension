@@ -12,7 +12,7 @@
   <header class="dashboard-header">
     <div class="header-left">
       <h1>⏱️ Focus Tracker</h1>
-      <p class="subtitle">Track your productivity & stay focused</p>
+      <p class="subtitle">Track your productivity &amp; stay focused</p>
     </div>
     <div class="header-right">
       <button id="settingsBtn" class="icon-btn" title="Settings">⚙️</button>
@@ -25,12 +25,12 @@
     <div class="modal-content">
       <div class="modal-header">
         <h2>⚙️ Settings</h2>
-        <button class="close-btn" onclick="closeSettings()">✕</button>
+        <button class="close-btn">✕</button>
       </div>
-      
+
       <div class="settings-section">
         <h3>🎨 Appearance</h3>
-        
+
         <div class="setting-item">
           <label>Theme</label>
           <select id="themeSelect">
@@ -53,10 +53,13 @@
 
       <div class="settings-section">
         <h3>📁 Category Management</h3>
-        <p class="help-text">Customize how websites are categorized</p>
-        
+        <p class="help-text">
+          Override how websites are categorized. Enter the domain only
+          (e.g. <code>youtube.com</code>) — no https:// needed.
+        </p>
+
         <div class="category-manager">
-          <input type="text" id="categoryDomain" placeholder="example.com" />
+          <input type="text" id="categoryDomain" placeholder="e.g. youtube.com" />
           <select id="categorySelect">
             <option value="Learning">📚 Learning</option>
             <option value="Development">💻 Development</option>
@@ -69,25 +72,52 @@
         <ul id="categoryList" class="category-list"></ul>
       </div>
 
-      <button class="save-settings-btn" onclick="saveSettings()">
+      <button class="save-settings-btn">
         💾 Save Settings
       </button>
+
+      <!-- LOGOUT BUTTON -->
+      <div class="settings-section" style="margin-top: 12px; border-top: 1px solid var(--border); padding-top: 16px;">
+        <h3>🔐 Account</h3>
+        <button
+          id="logoutBtn"
+          style="
+            width: 100%;
+            padding: 12px;
+            background: #ef4444;
+            color: white;
+            border: none;
+            border-radius: 10px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.2s;
+          "
+          onmouseover="this.style.background='#dc2626'"
+          onmouseout="this.style.background='#ef4444'"
+        >
+          🚪 Log Out
+        </button>
+        <p style="font-size: 11px; color: var(--text-secondary); text-align: center; margin-top: 6px;">
+          Your data stays saved. You can log back in with your token.
+        </p>
+      </div>
     </div>
   </div>
 
   <!-- MAIN GRID -->
   <div class="dashboard-grid">
-    
+
     <!-- LEFT COLUMN -->
     <div class="left-column">
-      
+
       <!-- FOCUS MODE CARD -->
       <div class="card focus-card">
         <h2>🎯 Focus Mode</h2>
-        
+
         <div class="focus-status" id="focusStatus">
           <div class="status-indicator"></div>
-          <span id="focusBtn">FOCUS MODE OFF</span>
+          <span id="focusBtn">⭕ FOCUS MODE OFF</span>
         </div>
 
         <div class="focus-controls">
@@ -143,7 +173,7 @@
 
     <!-- MIDDLE COLUMN -->
     <div class="middle-column">
-      
+
       <!-- SUMMARY STATS -->
       <div class="stats-grid">
         <div class="stat-card">
@@ -204,7 +234,7 @@
 
     <!-- RIGHT COLUMN -->
     <div class="right-column">
-      
+
       <!-- DAILY REFLECTION -->
       <div class="card reflection-card">
         <h2>🧘 Daily Reflection</h2>
@@ -213,21 +243,21 @@
         <div class="reflection-form">
           <div class="form-group">
             <label>What distracted you the most?</label>
-            <textarea id="reflectionDistractions" 
+            <textarea id="reflectionDistractions"
                       placeholder="E.g., Social media, YouTube videos..."
                       rows="2"></textarea>
           </div>
 
           <div class="form-group">
             <label>What went well today?</label>
-            <textarea id="reflectionWentWell" 
+            <textarea id="reflectionWentWell"
                       placeholder="E.g., Completed project, learned new skill..."
                       rows="2"></textarea>
           </div>
 
           <div class="form-group">
             <label>What can you improve?</label>
-            <textarea id="reflectionImprovements" 
+            <textarea id="reflectionImprovements"
                       placeholder="E.g., Start work earlier, take breaks..."
                       rows="2"></textarea>
           </div>
