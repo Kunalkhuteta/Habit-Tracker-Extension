@@ -1,0 +1,53 @@
+# render.yaml  —  Render Blueprint
+# Push this file to your GitHub repo root.
+# Then go to render.com → New → Blueprint → connect your repo.
+# Render reads this file and sets everything up automatically.
+
+services:
+  - type: web
+    name: focus-tracker-api
+    runtime: node
+    region: oregon          # or: frankfurt, singapore, ohio, virginia
+    plan: free              # upgrade to "starter" ($7/mo) to avoid sleep
+    branch: main            # your default branch
+
+    buildCommand: npm install
+    startCommand: npm start
+
+    # Auto-deploy every time you push to main
+    autoDeploy: true
+
+    # Health check — Render uses this to confirm the server is running
+    healthCheckPath: /health
+
+    envVars:
+      # These are PLACEHOLDERS. After first deploy, go to:
+      # Render Dashboard → focus-tracker-api → Environment
+      # and fill in the real values.
+
+      - key: NODE_ENV
+        value: production
+
+      - key: PORT
+        value: 10000          # Render assigns its own port internally; this is fine to set
+
+      - key: MONGODB_URI
+        sync: false           # "sync: false" means Render will prompt you to fill this in
+
+      - key: JWT_SECRET
+        generateValue: true   # Render auto-generates a secure random value ✅
+
+      - key: EMAIL_USER
+        sync: false
+
+      - key: EMAIL_PASSWORD
+        sync: false
+
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+
+      - key: PROD_URL
+        sync: false           # Set to your Render URL after first deploy
+
+      - key: ALLOWED_ORIGINS
+        sync: false           # Set to chrome-extension://YOUR_EXTENSION_ID
