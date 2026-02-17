@@ -1,18 +1,25 @@
 {
   "name": "focus-tracker-server",
   "version": "2.1.0",
-  "description": "Backend server for Focus Tracker with token-based authentication",
+  "description": "Backend server for Focus Tracker with email/password and Google OAuth authentication",
   "type": "module",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
     "dev": "nodemon server.js"
   },
+  "engines": {
+    "node": ">=18.0.0"
+  },
   "dependencies": {
-    "express": "^4.18.2",
-    "mongoose": "^8.0.3",
-    "cors": "^2.8.5",
-    "nodemailer": "^6.9.7"
+    "bcryptjs":           "^2.4.3",
+    "cors":               "^2.8.5",
+    "dotenv":             "^16.4.5",
+    "express":            "^4.18.2",
+    "express-rate-limit": "^7.3.1",
+    "google-auth-library": "^9.11.0",
+    "mongoose":           "^8.0.3",
+    "nodemailer":         "^6.9.7"
   },
   "devDependencies": {
     "nodemon": "^3.0.2"

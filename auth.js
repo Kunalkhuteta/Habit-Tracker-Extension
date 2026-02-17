@@ -1,381 +1,363 @@
-const API_BASE = "http://localhost:5000";
+/* =========================================================
+   auth.js  —  Handles sign-in, sign-up, Google OAuth,
+               forgot password, and session management.
 
-// ==================== UTILITY FUNCTIONS ====================
+   Depends on: config.js (provides API_BASE)
+========================================================= */
 
-function showSection(sectionId) {
-  document.querySelectorAll(".auth-section").forEach(section => {
-    section.classList.add("hidden");
-  });
-  document.getElementById(sectionId).classList.remove("hidden");
+/* =========================
+   UI HELPERS
+========================= */
+function showMsg(text, type = "error") {
+  const box = document.getElementById("msgBox");
+  box.textContent = text;
+  box.className   = `msg ${type} show`;
+  // Auto-hide success messages
+  if (type === "success") setTimeout(() => box.classList.remove("show"), 4000);
 }
 
-function showLoading(show = true) {
-  const overlay = document.getElementById("loadingOverlay");
-  if (show) {
-    overlay.classList.remove("hidden");
-  } else {
-    overlay.classList.add("hidden");
-  }
+function hideMsg() {
+  document.getElementById("msgBox").classList.remove("show");
 }
 
-function showError(message) {
-  const errorEl = document.getElementById("errorMessage");
-  errorEl.textContent = message;
-  errorEl.classList.remove("hidden");
-  
-  setTimeout(() => {
-    errorEl.classList.add("hidden");
-  }, 5000);
+function setLoading(btnId, loading, label = "") {
+  const btn = document.getElementById(btnId);
+  if (!btn) return;
+  btn.disabled = loading;
+  btn.innerHTML = loading
+    ? `<span class="spinner"></span> Please wait…`
+    : label || btn.dataset.label || btn.textContent;
+  if (label) btn.dataset.label = label;
 }
 
-function showSuccess(message) {
-  const successEl = document.getElementById("successMessage");
-  successEl.textContent = message;
-  successEl.classList.remove("hidden");
-  
-  setTimeout(() => {
-    successEl.classList.add("hidden");
-  }, 5000);
+function switchTab(tab) {
+  hideMsg();
+  document.getElementById("loginSection").classList.toggle("active", tab === "login");
+  document.getElementById("signupSection").classList.toggle("active", tab === "signup");
+  document.getElementById("tabLogin").classList.toggle("active", tab === "login");
+  document.getElementById("tabSignup").classList.toggle("active", tab === "signup");
 }
 
-async function storeToken(token) {
+function showForgot() {
+  hideMsg();
+  document.getElementById("mainSection").style.display  = "none";
+  document.getElementById("forgotSection").classList.add("active");
+}
+
+function showMain() {
+  hideMsg();
+  document.getElementById("mainSection").style.display  = "";
+  document.getElementById("forgotSection").classList.remove("active");
+  // Reset forgot steps
+  document.getElementById("forgotStep1").style.display = "";
+  document.getElementById("forgotStep2").style.display = "none";
+}
+
+/* =========================
+   PASSWORD STRENGTH
+========================= */
+document.getElementById("signupPassword").addEventListener("input", (e) => {
+  const val  = e.target.value;
+  const fill = document.getElementById("strengthFill");
+  const text = document.getElementById("strengthText");
+
+  let score = 0;
+  if (val.length >= 8)          score++;
+  if (/[A-Z]/.test(val))        score++;
+  if (/[0-9]/.test(val))        score++;
+  if (/[^A-Za-z0-9]/.test(val)) score++;
+
+  const levels = [
+    { w: "0%",   bg: "#e2e8f0", label: "" },
+    { w: "25%",  bg: "#ef4444", label: "Weak" },
+    { w: "50%",  bg: "#f97316", label: "Fair" },
+    { w: "75%",  bg: "#eab308", label: "Good" },
+    { w: "100%", bg: "#22c55e", label: "Strong" }
+  ];
+
+  const lvl = levels[score] || levels[0];
+  fill.style.width      = lvl.w;
+  fill.style.background = lvl.bg;
+  text.textContent      = lvl.label;
+  text.style.color      = lvl.bg;
+});
+
+/* =========================
+   STORAGE HELPERS
+========================= */
+function storeSession(token, user) {
   return new Promise((resolve) => {
-    chrome.storage.local.set({ 
-      authToken: token,
+    chrome.storage.local.set({
+      authToken:     token,
+      userInfo:      user,
       lastValidated: new Date().toISOString().split("T")[0]
     }, resolve);
   });
 }
 
-async function getStoredToken() {
-  return new Promise((resolve) => {
-    chrome.storage.local.get(["authToken", "lastValidated"], (data) => {
-      resolve(data);
-    });
+/* =========================
+   API HELPERS
+========================= */
+async function apiFetch(path, options = {}) {
+  const res  = await fetch(`${API_BASE}${path}`, {
+    ...options,
+    headers: { "Content-Type": "application/json", ...(options.headers || {}) }
   });
+  const data = await res.json().catch(() => ({}));
+  return { ok: res.ok, status: res.status, data };
 }
 
-async function clearStoredToken() {
-  return new Promise((resolve) => {
-    chrome.storage.local.remove(["authToken", "lastValidated"], resolve);
-  });
-}
-
-// ==================== DAILY VALIDATION CHECK ====================
-
-async function checkDailyValidation() {
-  const { authToken, lastValidated } = await getStoredToken();
-  const today = new Date().toISOString().split("T")[0];
-  
-  // If no token stored, show login
-  if (!authToken) {
-    showSection("loginSection");
-    return false;
-  }
-  
-  // If already validated today, proceed to dashboard
-  if (lastValidated === today) {
-    openDashboard();
-    return true;
-  }
-  
-  // Need to validate token for today
-  showSection("loginSection");
-  document.getElementById("loginToken").value = authToken;
-  return false;
-}
-
-// ==================== VALIDATE TOKEN ====================
-
-async function validateToken(token) {
-  showLoading(true);
-  
-  try {
-    const response = await fetch(`${API_BASE}/auth/validate-token`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ token })
-    });
-    
-    const data = await response.json();
-    showLoading(false);
-    
-    if (response.ok && data.valid) {
-      await storeToken(token);
-      showSuccess("Token validated successfully!");
-      
-      setTimeout(() => {
-        openDashboard();
-      }, 1000);
-      
-      return true;
-    } else {
-      showError(data.error || "Invalid token");
-      await clearStoredToken();
-      return false;
-    }
-  } catch (error) {
-    showLoading(false);
-    showError("Network error. Please check if the server is running.");
-    return false;
-  }
-}
-
-// ==================== ACTIVATE NEW TOKEN ====================
-
-async function activateNewToken(email) {
-  showLoading(true);
-  
-  try {
-    const response = await fetch(`${API_BASE}/auth/activate-token`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email: email || null })
-    });
-    
-    const data = await response.json();
-    showLoading(false);
-    
-    if (response.ok && data.token) {
-      // Display the generated token
-      document.getElementById("generatedToken").textContent = data.token;
-      showSection("tokenDisplaySection");
-      
-      // Store token temporarily (will be stored permanently when user clicks Continue)
-      window.tempToken = data.token;
-      
-      return true;
-    } else {
-      showError(data.error || "Failed to generate token");
-      return false;
-    }
-  } catch (error) {
-    showLoading(false);
-    showError("Network error. Please check if the server is running.");
-    return false;
-  }
-}
-
-// ==================== REQUEST OTP ====================
-
-async function requestOTP(email) {
-  showLoading(true);
-  
-  try {
-    const response = await fetch(`${API_BASE}/auth/request-otp`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email })
-    });
-    
-    const data = await response.json();
-    showLoading(false);
-    
-    if (response.ok && data.success) {
-      // Show OTP verification form
-      document.getElementById("requestOtpForm").classList.add("hidden");
-      document.getElementById("verifyOtpForm").classList.remove("hidden");
-      
-      // Store email for verification
-      window.recoveryEmail = email;
-      
-      return true;
-    } else {
-      showError(data.error || "Failed to send OTP");
-      return false;
-    }
-  } catch (error) {
-    showLoading(false);
-    showError("Network error. Please check if the server is running.");
-    return false;
-  }
-}
-
-// ==================== VERIFY OTP ====================
-
-async function verifyOTP(email, otp) {
-  showLoading(true);
-  
-  try {
-    const response = await fetch(`${API_BASE}/auth/verify-otp`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email, otp })
-    });
-    
-    const data = await response.json();
-    showLoading(false);
-    
-    if (response.ok && data.token) {
-      // Display the new token
-      document.getElementById("generatedToken").textContent = data.token;
-      
-      // Show token display section
-      showSection("tokenDisplaySection");
-      
-      // Store token temporarily
-      window.tempToken = data.token;
-      
-      return true;
-    } else {
-      showError(data.error || "Invalid OTP");
-      return false;
-    }
-  } catch (error) {
-    showLoading(false);
-    showError("Network error. Please check if the server is running.");
-    return false;
-  }
-}
-
-// ==================== OPEN DASHBOARD ====================
-
-function openDashboard() {
+function goToDashboard() {
   window.location.href = "dashboard.html";
 }
 
-// ==================== EVENT LISTENERS ====================
+/* =========================
+   SIGN IN
+========================= */
+async function handleLogin() {
+  const email    = document.getElementById("loginEmail").value.trim();
+  const password = document.getElementById("loginPassword").value;
 
+  if (!email || !password) {
+    showMsg("Please enter your email and password");
+    return;
+  }
+
+  setLoading("loginBtn", true, "Sign In");
+  hideMsg();
+
+  const { ok, data } = await apiFetch("/auth/login", {
+    method: "POST",
+    body: JSON.stringify({ email, password })
+  });
+
+  setLoading("loginBtn", false);
+
+  if (ok && data.token) {
+    await storeSession(data.token, data.user);
+    // Tell background script to reload its auth state
+    chrome.runtime.sendMessage({ type: "AUTH_TOKEN_UPDATED" });
+    showMsg("Welcome back! Redirecting…", "success");
+    setTimeout(goToDashboard, 800);
+  } else {
+    showMsg(data.error || "Sign in failed. Please try again.");
+  }
+}
+
+/* =========================
+   SIGN UP
+========================= */
+async function handleSignup() {
+  const name     = document.getElementById("signupName").value.trim();
+  const email    = document.getElementById("signupEmail").value.trim();
+  const password = document.getElementById("signupPassword").value;
+
+  if (!email || !password) {
+    showMsg("Email and password are required");
+    return;
+  }
+  if (password.length < 8) {
+    showMsg("Password must be at least 8 characters");
+    return;
+  }
+
+  setLoading("signupBtn", true, "Create Account");
+  hideMsg();
+
+  const { ok, data } = await apiFetch("/auth/signup", {
+    method: "POST",
+    body: JSON.stringify({ email, password, name })
+  });
+
+  setLoading("signupBtn", false);
+
+  if (ok && data.token) {
+    await storeSession(data.token, data.user);
+    chrome.runtime.sendMessage({ type: "AUTH_TOKEN_UPDATED" });
+
+    if (!data.user?.isVerified) {
+      showMsg("Account created! Check your email to verify your account.", "info");
+      setTimeout(goToDashboard, 2000);
+    } else {
+      showMsg("Account created! Welcome!", "success");
+      setTimeout(goToDashboard, 800);
+    }
+  } else {
+    showMsg(data.error || "Sign up failed. Please try again.");
+  }
+}
+
+/* =========================
+   GOOGLE SIGN-IN
+========================= */
+async function handleGoogleSignIn() {
+  hideMsg();
+
+  // chrome.identity.getAuthToken gets a Google OAuth access token
+  // without the user ever seeing a "token" string — they just click
+  // their Google account and that's it.
+  chrome.identity.getAuthToken({ interactive: true }, async (accessToken) => {
+    if (chrome.runtime.lastError || !accessToken) {
+      showMsg("Google sign-in was cancelled or failed. Please try again.");
+      return;
+    }
+
+    document.getElementById("googleBtn").disabled = true;
+    document.getElementById("googleBtn").innerHTML = `<span class="spinner" style="border-color:rgba(0,0,0,0.2);border-top-color:#374151;"></span> Signing in…`;
+
+    const { ok, data } = await apiFetch("/auth/google", {
+      method: "POST",
+      body: JSON.stringify({ accessToken })
+    });
+
+    document.getElementById("googleBtn").disabled = false;
+    document.getElementById("googleBtn").innerHTML = `
+      <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" alt="Google" style="width:20px;height:20px;" />
+      Continue with Google
+    `;
+
+    if (ok && data.token) {
+      await storeSession(data.token, data.user);
+      chrome.runtime.sendMessage({ type: "AUTH_TOKEN_UPDATED" });
+      showMsg("Welcome! Redirecting…", "success");
+      setTimeout(goToDashboard, 800);
+    } else {
+      showMsg(data.error || "Google sign-in failed. Please try again.");
+    }
+  });
+}
+
+/* =========================
+   FORGOT PASSWORD
+========================= */
+let forgotEmail = "";
+
+async function handleSendOtp() {
+  const email = document.getElementById("forgotEmail").value.trim();
+  if (!email) { showMsg("Please enter your email"); return; }
+
+  setLoading("sendOtpBtn", true, "Send Reset Code");
+  hideMsg();
+
+  const { ok, data } = await apiFetch("/auth/forgot-password", {
+    method: "POST",
+    body: JSON.stringify({ email })
+  });
+
+  setLoading("sendOtpBtn", false);
+
+  if (ok) {
+    forgotEmail = email;
+    showMsg("Reset code sent! Check your inbox.", "success");
+    setTimeout(() => {
+      hideMsg();
+      document.getElementById("forgotStep1").style.display = "none";
+      document.getElementById("forgotStep2").style.display = "";
+    }, 1200);
+  } else {
+    showMsg(data.error || "Failed to send reset email");
+  }
+}
+
+async function handleResetPassword() {
+  const otp         = document.getElementById("otpInput").value.trim();
+  const newPassword = document.getElementById("newPassword").value;
+
+  if (!otp || otp.length !== 6) { showMsg("Enter the 6-digit code from your email"); return; }
+  if (!newPassword || newPassword.length < 8) { showMsg("Password must be at least 8 characters"); return; }
+
+  setLoading("resetBtn", true, "Reset Password");
+  hideMsg();
+
+  const { ok, data } = await apiFetch("/auth/reset-password", {
+    method: "POST",
+    body: JSON.stringify({ email: forgotEmail, otp, newPassword })
+  });
+
+  setLoading("resetBtn", false);
+
+  if (ok) {
+    showMsg("Password reset! You can now sign in.", "success");
+    setTimeout(() => {
+      showMain();
+      switchTab("login");
+      document.getElementById("loginEmail").value = forgotEmail;
+    }, 1500);
+  } else {
+    showMsg(data.error || "Reset failed. Please try again.");
+  }
+}
+
+/* =========================
+   AUTO-LOGIN CHECK
+========================= */
+async function checkExistingSession() {
+  const data = await new Promise(resolve =>
+    chrome.storage.local.get(["authToken", "lastValidated"], resolve)
+  );
+
+  if (!data.authToken) return; // No session, show login
+
+  const today = new Date().toISOString().split("T")[0];
+  if (data.lastValidated === today) {
+    // Already validated today — go straight to dashboard
+    goToDashboard();
+    return;
+  }
+
+  // Validate token with server (might be expired)
+  const { ok } = await apiFetch("/auth/me", {
+    headers: { Authorization: `Bearer ${data.authToken}` }
+  });
+
+  if (ok) {
+    // Token still valid — update validation date and proceed
+    await new Promise(resolve =>
+      chrome.storage.local.set({ lastValidated: today }, resolve)
+    );
+    goToDashboard();
+  }
+  // else: token expired — show login page (do nothing)
+}
+
+/* =========================
+   OTP INPUT: numbers only
+========================= */
+document.getElementById("otpInput").addEventListener("input", (e) => {
+  e.target.value = e.target.value.replace(/\D/g, "").slice(0, 6);
+});
+
+/* =========================
+   EVENT LISTENERS
+========================= */
 document.addEventListener("DOMContentLoaded", () => {
-  // Check if user needs to validate today
-  checkDailyValidation();
-  
-  // ============ LOGIN SECTION ============
-  
-  document.getElementById("validateTokenBtn").addEventListener("click", async () => {
-    const token = document.getElementById("loginToken").value.trim();
-    
-    if (!token) {
-      showError("Please enter your access token");
-      return;
-    }
-    
-    if (token.length !== 64) {
-      showError("Token must be exactly 64 characters");
-      return;
-    }
-    
-    await validateToken(token);
-  });
-  
-  // Allow Enter key to validate
-  document.getElementById("loginToken").addEventListener("keypress", (e) => {
-    if (e.key === "Enter") {
-      document.getElementById("validateTokenBtn").click();
-    }
-  });
-  
-  document.getElementById("showActivateBtn").addEventListener("click", () => {
-    showSection("activateSection");
-  });
-  
-  document.getElementById("showForgotBtn").addEventListener("click", () => {
-    showSection("forgotSection");
-  });
-  
-  // ============ ACTIVATE SECTION ============
-  
-  document.getElementById("activateTokenBtn").addEventListener("click", async () => {
-    const email = document.getElementById("activateEmail").value.trim();
-    
-    // Email is optional, but validate if provided
-    if (email && !email.includes("@")) {
-      showError("Please enter a valid email address");
-      return;
-    }
-    
-    await activateNewToken(email);
-  });
-  
-  document.getElementById("backToLoginBtn").addEventListener("click", () => {
-    showSection("loginSection");
-  });
-  
-  // ============ TOKEN DISPLAY SECTION ============
-  
-  document.getElementById("copyTokenBtn").addEventListener("click", () => {
-    const token = document.getElementById("generatedToken").textContent;
-    
-    navigator.clipboard.writeText(token).then(() => {
-      showSuccess("Token copied to clipboard!");
-      
-      // Change button text temporarily
-      const btn = document.getElementById("copyTokenBtn");
-      const originalText = btn.textContent;
-      btn.textContent = "✅ Copied!";
-      
-      setTimeout(() => {
-        btn.textContent = originalText;
-      }, 2000);
-    }).catch(() => {
-      showError("Failed to copy. Please copy manually.");
+  checkExistingSession();
+
+  document.getElementById("loginBtn").addEventListener("click", handleLogin);
+  document.getElementById("signupBtn").addEventListener("click", handleSignup);
+  document.getElementById("googleBtn").addEventListener("click", handleGoogleSignIn);
+  document.getElementById("sendOtpBtn").addEventListener("click", handleSendOtp);
+  document.getElementById("resetBtn").addEventListener("click", handleResetPassword);
+  document.getElementById("resendBtn").addEventListener("click", handleSendOtp);
+
+  // Enter key support
+  ["loginEmail", "loginPassword"].forEach(id => {
+    document.getElementById(id)?.addEventListener("keypress", e => {
+      if (e.key === "Enter") handleLogin();
     });
   });
-  
-  document.getElementById("continueBtn").addEventListener("click", async () => {
-    if (window.tempToken) {
-      await storeToken(window.tempToken);
-      delete window.tempToken;
-      openDashboard();
-    }
+
+  ["signupName", "signupEmail", "signupPassword"].forEach(id => {
+    document.getElementById(id)?.addEventListener("keypress", e => {
+      if (e.key === "Enter") handleSignup();
+    });
   });
-  
-  // ============ FORGOT TOKEN SECTION ============
-  
-  document.getElementById("requestOtpBtn").addEventListener("click", async () => {
-    const email = document.getElementById("recoveryEmail").value.trim();
-    
-    if (!email || !email.includes("@")) {
-      showError("Please enter a valid email address");
-      return;
-    }
-    
-    await requestOTP(email);
+
+  document.getElementById("forgotEmail")?.addEventListener("keypress", e => {
+    if (e.key === "Enter") handleSendOtp();
   });
-  
-  document.getElementById("verifyOtpBtn").addEventListener("click", async () => {
-    const otp = document.getElementById("otpInput").value.trim();
-    
-    if (!otp || otp.length !== 6 || !/^\d{6}$/.test(otp)) {
-      showError("Please enter a valid 6-digit OTP");
-      return;
-    }
-    
-    if (!window.recoveryEmail) {
-      showError("Session expired. Please request OTP again.");
-      return;
-    }
-    
-    await verifyOTP(window.recoveryEmail, otp);
-  });
-  
-  // Allow Enter key for OTP
-  document.getElementById("otpInput").addEventListener("keypress", (e) => {
-    if (e.key === "Enter") {
-      document.getElementById("verifyOtpBtn").click();
-    }
-  });
-  
-  // Auto-format OTP input (numbers only)
-  document.getElementById("otpInput").addEventListener("input", (e) => {
-    e.target.value = e.target.value.replace(/\D/g, "").slice(0, 6);
-  });
-  
-  document.getElementById("resendOtpBtn").addEventListener("click", async () => {
-    if (window.recoveryEmail) {
-      await requestOTP(window.recoveryEmail);
-      showSuccess("OTP resent to your email");
-    }
-  });
-  
-  document.getElementById("backToLoginFromForgot").addEventListener("click", () => {
-    // Reset forgot section
-    document.getElementById("requestOtpForm").classList.remove("hidden");
-    document.getElementById("verifyOtpForm").classList.add("hidden");
-    document.getElementById("recoveryEmail").value = "";
-    document.getElementById("otpInput").value = "";
-    delete window.recoveryEmail;
-    
-    showSection("loginSection");
+
+  document.getElementById("newPassword")?.addEventListener("keypress", e => {
+    if (e.key === "Enter") handleResetPassword();
   });
 });

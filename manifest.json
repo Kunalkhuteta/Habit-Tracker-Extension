@@ -39,5 +39,9 @@
       "resources": ["blocked.html"],
       "matches": ["<all_urls>"]
     }
-  ]
+  ],
+  "oauth2": {
+  "client_id": "368712052957-o3u8ihbvvdsi81qs992ldsr2qukp0enp.apps.googleusercontent.com",
+  "scopes": ["openid", "email", "profile"]
+}
 }
