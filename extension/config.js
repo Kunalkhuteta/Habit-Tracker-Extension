@@ -10,9 +10,15 @@
    That's the ONLY file you need to change.
 ========================================================= */
 
-const IS_PRODUCTION = true; // ← flip to true when deployed
+// ↓↓↓ PASTE YOUR RENDER URL HERE ↓↓↓
+// Find it in: Render Dashboard → your service → top of the page
+// Example: https://focus-tracker-api.onrender.com
+const RENDER_URL = "https://habit-tracker-extension.onrender.com";
 
-const PROD_API_URL = "https://habit-tracker-extension.onrender.com"; // ← your deployed URL here
+// Set to true since your server is deployed on Render
+const IS_PRODUCTION = true;
+
+const PROD_API_URL = RENDER_URL;
 const DEV_API_URL  = "http://localhost:5000";
 
 const API_BASE = IS_PRODUCTION ? PROD_API_URL : DEV_API_URL;

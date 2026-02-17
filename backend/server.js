@@ -78,13 +78,25 @@ mongoose.connect(MONGODB_URI || "mongodb://localhost:27017/focus-tracker")
   .catch(err => console.error("❌ MongoDB error:", err));
 
 // ==================== EMAIL ====================
-const transporter = nodemailer.createTransport({
-  service: "gmail",
-  auth: {
-    user: EMAIL_USER,
-    pass: EMAIL_PASSWORD   // Use a Gmail App Password, not your real password
+// Wrapped in try-catch so a bad EMAIL_PASSWORD never crashes the server.
+// App Password must have NO spaces: "abcd efgh ijkl mnop" → "abcdefghijklmnop"
+let transporter = null;
+try {
+  if (EMAIL_USER && EMAIL_PASSWORD) {
+    transporter = nodemailer.createTransport({
+      service: "gmail",
+      auth: {
+        user: EMAIL_USER,
+        pass: EMAIL_PASSWORD.replace(/\s/g, "") // strip spaces just in case
+      }
+    });
+    console.log("✅ Email transporter ready");
+  } else {
+    console.warn("⚠️  EMAIL_USER or EMAIL_PASSWORD not set — emails disabled");
   }
-});
+} catch (err) {
+  console.error("❌ Email setup failed:", err.message);
+}
 
 // ==================== GOOGLE OAUTH ====================
 const googleClient = GOOGLE_CLIENT_ID
@@ -188,6 +200,7 @@ function hashOTP(otp) {
 
 // ==================== EMAIL HELPERS ====================
 async function sendVerificationEmail(email, token) {
+  if (!transporter) { console.warn("Email not configured — skipping verification email"); return; }
   const link = `${PROD_URL}/auth/verify-email?token=${token}`;
   await transporter.sendMail({
     from: `"Focus Tracker" <${EMAIL_USER}>`,
@@ -207,6 +220,7 @@ async function sendVerificationEmail(email, token) {
 }
 
 async function sendPasswordResetEmail(email, otp) {
+  if (!transporter) throw new Error("Email not configured on server");
   await transporter.sendMail({
     from: `"Focus Tracker" <${EMAIL_USER}>`,
     to: email,
@@ -292,11 +306,13 @@ app.post("/auth/signup", async (req, res) => {
 
     await ensurePreferences(user._id);
 
-    // Send verification email (non-blocking — don't fail signup if email fails)
-    if (EMAIL_USER && EMAIL_PASSWORD) {
-      sendVerificationEmail(email, verifyToken).catch(console.error);
+    // Send verification email — auto-verify if email not configured
+    if (transporter) {
+      sendVerificationEmail(email, verifyToken).catch((err) => {
+        console.error("Verification email failed:", err.message);
+      });
     } else {
-      // Dev mode: auto-verify
+      // No email configured — auto-verify so user can actually log in
       user.isVerified = true;
       user.verifyToken = null;
       await user.save();
