@@ -13,6 +13,10 @@
     "alarms",
     "identity"
   ],
+  "oauth2": {
+    "client_id": "368712052957-tphlrl0apqcic5ak08ibu3736pn3o3l0.apps.googleusercontent.com",
+    "scopes": ["openid", "email", "profile"]
+  },
   "host_permissions": [
     "<all_urls>"
   ],

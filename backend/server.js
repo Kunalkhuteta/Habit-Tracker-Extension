@@ -14,6 +14,12 @@ import { OAuth2Client } from "google-auth-library";
 
 const app = express();
 
+// ==================== TRUST PROXY ====================
+// Render (and most cloud hosts) sit behind a reverse proxy.
+// Without this, express-rate-limit sees X-Forwarded-For header
+// and throws ERR_ERL_UNEXPECTED_X_FORWARDED_FOR crashing every request.
+app.set("trust proxy", 1);
+
 // ==================== ENVIRONMENT VARIABLES ====================
 // Copy .env.example → .env and fill in your values.
 // NEVER commit .env to git.

@@ -10,8 +10,6 @@
    3. All errors shown visibly — no more silent failures
 ========================================================= */
 
-const RENDER_URL = "https://habit-tracker-extension.onrender.com";
-
 /* =========================
    UI HELPERS
 ========================= */
@@ -109,7 +107,7 @@ async function apiFetch(path, options = {}, timeoutMs = 20000) {
   }, 5000);
 
   try {
-    const res = await fetch(`${RENDER_URL}${path}`, {
+    const res = await fetch(`${API_BASE}${path}`, {
       ...options,
       signal: controller.signal,
       headers: {
@@ -266,23 +264,35 @@ async function handleSignup() {
    ONLY works in the service worker — not in extension pages.
 ========================= */
 async function handleGoogleSignIn() {
+  console.log("[AUTH.JS] Google button clicked");
   hideMsg();
 
   const btn = document.getElementById("googleBtn");
   btn.disabled  = true;
   btn.innerHTML = `<span class="spinner" style="border-color:rgba(0,0,0,0.15);border-top-color:#374151;"></span> Signing in…`;
 
-  // Set a timeout — if background doesn't respond in 30s something is wrong
+  // Check chrome.runtime is available
+  if (!chrome?.runtime?.sendMessage) {
+    showMsg("Chrome extension API not available. Try reloading.");
+    btn.disabled = false;
+    btn.innerHTML = `<img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" style="width:18px;height:18px;" alt="Google" /> Continue with Google`;
+    return;
+  }
+
+  console.log("[AUTH.JS] Sending GOOGLE_AUTH message to background...");
+
   const timeoutPromise = new Promise((_, reject) =>
-    setTimeout(() => reject(new Error("Google sign-in timed out. Please try again.")), 30000)
+    setTimeout(() => reject(new Error("No response from background after 35s. Open chrome://extensions → service worker → Console to see the error.")), 35000)
   );
 
   const authPromise = new Promise((resolve) => {
     chrome.runtime.sendMessage({ type: "GOOGLE_AUTH" }, (response) => {
       if (chrome.runtime.lastError) {
-        resolve({ success: false, error: "Background script error: " + chrome.runtime.lastError.message });
+        console.error("[AUTH.JS] sendMessage error:", chrome.runtime.lastError.message);
+        resolve({ success: false, error: "Background error: " + chrome.runtime.lastError.message });
       } else {
-        resolve(response || { success: false, error: "No response from background" });
+        console.log("[AUTH.JS] Got response from background:", response);
+        resolve(response || { success: false, error: "Background returned no response" });
       }
     });
   });
@@ -298,13 +308,11 @@ async function handleGoogleSignIn() {
       showMsg(response.error || "Google sign-in failed. Please try again.");
     }
   } catch (err) {
+    console.error("[AUTH.JS] Google auth error:", err.message);
     showMsg(err.message);
   } finally {
     btn.disabled  = false;
-    btn.innerHTML = `
-      <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg"
-           style="width:18px;height:18px;" alt="Google" />
-      Continue with Google`;
+    btn.innerHTML = `<img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" style="width:18px;height:18px;" alt="Google" /> Continue with Google`;
   }
 }
 

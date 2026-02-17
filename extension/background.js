@@ -494,64 +494,44 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     const now = Date.now();
 
     // ── GOOGLE AUTH ──
-    // Uses launchWebAuthFlow instead of getAuthToken.
-    // getAuthToken ONLY works for extensions published on Chrome Web Store.
-    // launchWebAuthFlow works for ALL extensions including unpacked/dev.
-    //
-    // HOW TO GET YOUR GOOGLE_CLIENT_ID for this flow:
-    // 1. console.cloud.google.com → Credentials → Create OAuth Client ID
-    // 2. Application type: "Web application" (NOT Chrome Extension)
-    // 3. Authorized redirect URIs: add your extension's redirect URL:
-    //    https://<EXTENSION_ID>.chromiumapp.org/
-    //    (find your extension ID at chrome://extensions)
-    // 4. Copy the Client ID and set GOOGLE_OAUTH_CLIENT_ID below
+    // Uses getAuthToken — works when manifest.json has:
+    //   "identity" permission + "oauth2": { "client_id": "YOUR_REAL_ID..." }
+    // The client_id in manifest.json MUST be a "Chrome Extension" type
+    // created in Google Cloud Console with your extension ID.
     if (msg.type === "GOOGLE_AUTH") {
-      // ↓↓↓ PASTE YOUR GOOGLE OAUTH CLIENT ID HERE ↓↓↓
-      // Get it from console.cloud.google.com → Credentials → OAuth 2.0 Client IDs
-      // Create type: "Web application", redirect URI: https://EXTENSION_ID.chromiumapp.org/
-      const GOOGLE_OAUTH_CLIENT_ID = "YOUR_GOOGLE_CLIENT_ID.apps.googleusercontent.com";
-
-      if (GOOGLE_OAUTH_CLIENT_ID.includes("YOUR_GOOGLE")) {
-        sendResponse({ success: false, error: "Google Client ID not configured in background.js. See setup instructions." });
-        return;
-      }
+      console.log("[GOOGLE_AUTH] Step 1: Message received");
 
       try {
-        const redirectUrl = chrome.identity.getRedirectURL();
-        const authUrl = new URL("https://accounts.google.com/o/oauth2/v2/auth");
-        authUrl.searchParams.set("client_id",     GOOGLE_OAUTH_CLIENT_ID);
-        authUrl.searchParams.set("response_type", "token");
-        authUrl.searchParams.set("redirect_uri",  redirectUrl);
-        authUrl.searchParams.set("scope",         "openid email profile");
-
-        const responseUrl = await new Promise((resolve, reject) => {
-          chrome.identity.launchWebAuthFlow(
-            { url: authUrl.toString(), interactive: true },
-            (callbackUrl) => {
-              if (chrome.runtime.lastError || !callbackUrl) {
-                reject(new Error(chrome.runtime.lastError?.message || "Google sign-in was cancelled"));
-              } else {
-                resolve(callbackUrl);
-              }
-            }
-          );
-        });
-
-        // Extract access_token from the redirect URL fragment
-        const hashParams = new URLSearchParams(new URL(responseUrl).hash.slice(1));
-        const accessToken = hashParams.get("access_token");
-
-        if (!accessToken) {
-          sendResponse({ success: false, error: "No access token received from Google" });
+        if (!chrome.identity) {
+          sendResponse({ success: false, error: "chrome.identity not available. Check manifest has identity permission." });
           return;
         }
+        console.log("[GOOGLE_AUTH] Step 2: Calling getAuthToken...");
 
+        // Get Google access token — Chrome handles the sign-in popup
+        const accessToken = await new Promise((resolve, reject) => {
+          chrome.identity.getAuthToken({ interactive: true }, (token) => {
+            if (chrome.runtime.lastError) {
+              console.error("[GOOGLE_AUTH] getAuthToken error:", chrome.runtime.lastError.message);
+              reject(new Error(chrome.runtime.lastError.message));
+            } else if (!token) {
+              reject(new Error("No token returned — check oauth2.client_id in manifest.json"));
+            } else {
+              console.log("[GOOGLE_AUTH] Step 3: Got access token ✓");
+              resolve(token);
+            }
+          });
+        });
+
+        // Send token to our server to verify + create/login user
+        console.log("[GOOGLE_AUTH] Step 4: Sending token to server...");
         const res  = await fetch(`${BG_API_BASE}/auth/google`, {
           method:  "POST",
           headers: { "Content-Type": "application/json" },
           body:    JSON.stringify({ accessToken })
         });
         const data = await res.json().catch(() => ({}));
+        console.log("[GOOGLE_AUTH] Step 5: Server response:", res.status, data);
 
         if (res.ok && data.token) {
           await new Promise(resolve => chrome.storage.local.set({
@@ -561,13 +541,16 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           }, resolve));
           await loadAuthToken();
           await syncCategoriesFromServer();
+          console.log("[GOOGLE_AUTH] ✅ Success");
           sendResponse({ success: true, token: data.token, user: data.user });
         } else {
-          sendResponse({ success: false, error: data.error || "Google sign-in failed" });
+          console.error("[GOOGLE_AUTH] Server rejected:", data.error);
+          sendResponse({ success: false, error: data.error || "Server rejected Google token" });
         }
+
       } catch (err) {
-        console.error("GOOGLE_AUTH error:", err);
-        sendResponse({ success: false, error: err.message || "Google sign-in failed. Please try again." });
+        console.error("[GOOGLE_AUTH] ❌", err.message);
+        sendResponse({ success: false, error: err.message });
       }
       return;
     }

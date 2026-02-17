@@ -1,3 +1,8 @@
+/* dashboard.js — uses API_BASE from config.js (loaded before this script in dashboard.html) */
+const DASH_API = typeof API_BASE !== "undefined"
+  ? API_BASE
+  : "https://habit-tracker-extension.onrender.com";
+
 let timeChartInstance = null;
 let currentTheme = "light";
 let currentAccent = "blue";
@@ -59,7 +64,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 ========================= */
 async function loadPreferences() {
   try {
-    const res = await fetch("http://localhost:5000/preferences", {
+    const res = await fetch(`${DASH_API}/preferences`, {
       headers: getAuthHeaders()
     });
 
@@ -94,7 +99,7 @@ async function saveSettings() {
   const accent = document.querySelector(".color-option.active")?.dataset.color || "blue";
 
   try {
-    await fetch("http://localhost:5000/preferences", {
+    await fetch(`${DASH_API}/preferences`, {
       method: "POST",
       headers: getAuthHeaders(),
       body: JSON.stringify({ theme, accentColor: accent })
@@ -149,7 +154,7 @@ async function logout() {
 
   try {
     // Notify the server (best-effort, don't block on failure)
-    await fetch("http://localhost:5000/auth/logout", {
+    await fetch(`${DASH_API}/auth/logout`, {
       method: "POST",
       headers: getAuthHeaders()
     }).catch(() => {});
@@ -169,7 +174,7 @@ async function logout() {
 ========================= */
 async function loadCategories() {
   try {
-    const res = await fetch("http://localhost:5000/categories", {
+    const res = await fetch(`${DASH_API}/categories`, {
       headers: getAuthHeaders()
     });
 
@@ -260,7 +265,7 @@ async function addCategory() {
   }
 
   try {
-    const res = await fetch("http://localhost:5000/categories", {
+    const res = await fetch(`${DASH_API}/categories`, {
       method: "POST",
       headers: getAuthHeaders(),
       body: JSON.stringify({ domain: normalized, category })
@@ -287,7 +292,7 @@ async function addCategory() {
 
 async function deleteCategory(domain) {
   try {
-    const res = await fetch(`http://localhost:5000/categories/${encodeURIComponent(domain)}`, {
+    const res = await fetch(`${DASH_API}/categories/${encodeURIComponent(domain)}`, {
       method: "DELETE",
       headers: getAuthHeaders()
     });
@@ -316,7 +321,7 @@ async function loadReflection() {
   const today = getTodayKey();
 
   try {
-    const res = await fetch(`http://localhost:5000/reflections/${today}`, {
+    const res = await fetch(`${DASH_API}/reflections/${today}`, {
       headers: getAuthHeaders()
     });
 
@@ -344,7 +349,7 @@ async function saveReflection() {
   const improvements = document.getElementById("reflectionImprovements").value;
 
   try {
-    const res = await fetch("http://localhost:5000/reflections", {
+    const res = await fetch(`${DASH_API}/reflections`, {
       method: "POST",
       headers: getAuthHeaders(),
       body: JSON.stringify({ date: today, distractions, wentWell, improvements })
@@ -376,7 +381,7 @@ async function loadWeeklySummary() {
 
   try {
     const res = await fetch(
-      `http://localhost:5000/reflections?startDate=${startDate}&endDate=${endDate}`,
+      `${DASH_API}/reflections?startDate=${startDate}&endDate=${endDate}`,
       { headers: getAuthHeaders() }
     );
 
@@ -662,7 +667,7 @@ async function loadBlockedSites() {
 
   try {
     // STEP 1 — Fetch sites from server (awaited properly)
-    const res = await fetch("http://localhost:5000/blocked-sites", {
+    const res = await fetch(`${DASH_API}/blocked-sites`, {
       headers: getAuthHeaders()
     });
 
@@ -702,7 +707,7 @@ async function loadBlockedSites() {
 
             try {
               const delRes = await fetch(
-                `http://localhost:5000/blocked-sites/${encodeURIComponent(site)}`,
+                `${DASH_API}/blocked-sites/${encodeURIComponent(site)}`,
                 { method: "DELETE", headers: getAuthHeaders() }
               );
 
@@ -838,7 +843,7 @@ function initEventListeners() {
     addBtn.textContent = "Saving…";
 
     try {
-      const res = await fetch("http://localhost:5000/blocked-sites", {
+      const res = await fetch(`${DASH_API}/blocked-sites`, {
         method: "POST",
         headers: getAuthHeaders(),
         body: JSON.stringify({ site: normalized })
