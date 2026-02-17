@@ -4,9 +4,9 @@ const DASH_API = typeof API_BASE !== "undefined"
   : "https://habit-tracker-extension.onrender.com";
 
 let timeChartInstance = null;
-let currentTheme = "light";
+let currentTheme  = "light";
 let currentAccent = "blue";
-let authToken = null;
+let authToken     = null;
 
 /* =========================
    AUTHENTICATION
@@ -20,15 +20,11 @@ async function loadAuthToken() {
   });
 }
 
-// BUG FIX: Removed auto-redirect from getAuthHeaders. Redirecting inside a
-// helper function caused infinite loops when called during background API calls
-// and broke non-auth-sensitive operations. Auth guard is now only in DOMContentLoaded.
 function getAuthHeaders() {
   if (!authToken) {
     console.error("No auth token available");
     return { "Content-Type": "application/json" };
   }
-
   return {
     "Content-Type": "application/json",
     "Authorization": `Bearer ${authToken}`
@@ -56,7 +52,8 @@ document.addEventListener("DOMContentLoaded", async () => {
   loadReflection();
   loadWeeklySummary();
 
-  setInterval(loadDashboard, 10000);
+  // FIX: Refresh every 5s. Background flushes every 3s, so data is always fresh.
+  setInterval(loadDashboard, 5000);
 });
 
 /* =========================
@@ -64,17 +61,12 @@ document.addEventListener("DOMContentLoaded", async () => {
 ========================= */
 async function loadPreferences() {
   try {
-    const res = await fetch(`${DASH_API}/preferences`, {
-      headers: getAuthHeaders()
-    });
-
+    const res = await fetch(`${DASH_API}/preferences`, { headers: getAuthHeaders() });
     if (!res.ok) throw new Error("Failed to load preferences");
 
-    const prefs = await res.json();
-
-    currentTheme = prefs.theme || "light";
+    const prefs   = await res.json();
+    currentTheme  = prefs.theme      || "light";
     currentAccent = prefs.accentColor || "blue";
-
     applyTheme(currentTheme, currentAccent);
   } catch (err) {
     console.error("Failed to load preferences:", err);
@@ -83,7 +75,7 @@ async function loadPreferences() {
 }
 
 function applyTheme(theme, accent) {
-  document.body.setAttribute("data-theme", theme);
+  document.body.setAttribute("data-theme",  theme);
   document.body.setAttribute("data-accent", accent);
 
   const themeSelect = document.getElementById("themeSelect");
@@ -95,20 +87,18 @@ function applyTheme(theme, accent) {
 }
 
 async function saveSettings() {
-  const theme = document.getElementById("themeSelect").value;
+  const theme  = document.getElementById("themeSelect").value;
   const accent = document.querySelector(".color-option.active")?.dataset.color || "blue";
 
   try {
     await fetch(`${DASH_API}/preferences`, {
-      method: "POST",
+      method:  "POST",
       headers: getAuthHeaders(),
-      body: JSON.stringify({ theme, accentColor: accent })
+      body:    JSON.stringify({ theme, accentColor: accent })
     });
-
-    currentTheme = theme;
+    currentTheme  = theme;
     currentAccent = accent;
     applyTheme(theme, accent);
-
     closeSettings();
     showNotification("Settings saved!", "success");
   } catch (err) {
@@ -118,9 +108,9 @@ async function saveSettings() {
 }
 
 function showNotification(message, type = "success") {
-  const notification = document.createElement("div");
-  notification.className = `notification ${type}`;
-  notification.textContent = message;
+  const notification        = document.createElement("div");
+  notification.className    = `notification ${type}`;
+  notification.textContent  = message;
   notification.style.cssText = `
     position: fixed;
     top: 20px;
@@ -136,11 +126,9 @@ function showNotification(message, type = "success") {
     font-weight: 500;
     animation: slideIn 0.3s ease;
   `;
-
   document.body.appendChild(notification);
-
   setTimeout(() => {
-    notification.style.opacity = "0";
+    notification.style.opacity    = "0";
     notification.style.transition = "opacity 0.3s ease";
     setTimeout(() => notification.remove(), 300);
   }, 3000);
@@ -153,17 +141,12 @@ async function logout() {
   if (!confirm("Are you sure you want to log out?")) return;
 
   try {
-    // Notify the server (best-effort, don't block on failure)
     await fetch(`${DASH_API}/auth/logout`, {
-      method: "POST",
-      headers: getAuthHeaders()
+      method: "POST", headers: getAuthHeaders()
     }).catch(() => {});
   } catch (_) {}
 
-  // Tell background script to clear its state
   chrome.runtime.sendMessage({ type: "LOGOUT" });
-
-  // Clear local storage
   chrome.storage.local.remove(["authToken", "lastValidated"], () => {
     window.location.href = "auth.html";
   });
@@ -174,16 +157,12 @@ async function logout() {
 ========================= */
 async function loadCategories() {
   try {
-    const res = await fetch(`${DASH_API}/categories`, {
-      headers: getAuthHeaders()
-    });
-
+    const res = await fetch(`${DASH_API}/categories`, { headers: getAuthHeaders() });
     if (!res.ok) throw new Error("Failed to load categories");
 
     const categories = await res.json();
-
-    const list = document.getElementById("categoryList");
-    list.innerHTML = "";
+    const list       = document.getElementById("categoryList");
+    list.innerHTML   = "";
 
     if (!categories || categories.length === 0) {
       list.innerHTML = '<li style="color: var(--text-secondary); font-size: 13px; text-align: center; padding: 8px;">No custom categories yet</li>';
@@ -191,19 +170,19 @@ async function loadCategories() {
     }
 
     categories.forEach(cat => {
-      const li = document.createElement("li");
+      const li      = document.createElement("li");
       li.style.cssText = "display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--border);";
 
-      const info = document.createElement("div");
+      const info    = document.createElement("div");
       info.style.cssText = "display: flex; gap: 10px; align-items: center;";
 
-      const domain = document.createElement("span");
-      domain.className = "domain";
+      const domain  = document.createElement("span");
+      domain.className   = "domain";
       domain.textContent = cat.domain;
       domain.style.fontWeight = "500";
 
-      const badge = document.createElement("span");
-      badge.className = "category-badge";
+      const badge   = document.createElement("span");
+      badge.className   = "category-badge";
       badge.textContent = cat.category;
       badge.style.cssText = `
         background: ${getCategoryColor(cat.category)};
@@ -218,9 +197,9 @@ async function loadCategories() {
       info.appendChild(badge);
 
       const deleteBtn = document.createElement("button");
-      deleteBtn.textContent = "❌";
+      deleteBtn.textContent  = "❌";
       deleteBtn.style.cssText = "background: none; border: none; cursor: pointer; font-size: 14px;";
-      deleteBtn.onclick = () => deleteCategory(cat.domain);
+      deleteBtn.onclick       = () => deleteCategory(cat.domain);
 
       li.appendChild(info);
       li.appendChild(deleteBtn);
@@ -233,26 +212,25 @@ async function loadCategories() {
 
 function getCategoryColor(category) {
   const colors = {
-    "Learning": "#22c55e",
+    "Learning":    "#22c55e",
     "Development": "#3b82f6",
     "Distraction": "#ef4444",
-    "Other": "#f97316"
+    "Other":       "#f97316"
   };
   return colors[category] || "#94a3b8";
 }
 
 async function addCategory() {
-  const domainInput = document.getElementById("categoryDomain");
+  const domainInput    = document.getElementById("categoryDomain");
   const categorySelect = document.getElementById("categorySelect");
-  const domain = domainInput.value.trim();
-  const category = categorySelect.value;
+  const domain         = domainInput.value.trim();
+  const category       = categorySelect.value;
 
   if (!domain) {
     showNotification("Please enter a domain", "error");
     return;
   }
 
-  // Strip protocol and www if user paste a full URL
   const normalized = domain
     .toLowerCase()
     .replace(/^https?:\/\//, "")
@@ -266,9 +244,9 @@ async function addCategory() {
 
   try {
     const res = await fetch(`${DASH_API}/categories`, {
-      method: "POST",
+      method:  "POST",
       headers: getAuthHeaders(),
-      body: JSON.stringify({ domain: normalized, category })
+      body:    JSON.stringify({ domain: normalized, category })
     });
 
     if (!res.ok) {
@@ -278,10 +256,7 @@ async function addCategory() {
     }
 
     domainInput.value = "";
-
-    // BUG FIX: Sync to background so in-memory categoryMappings updates immediately
     chrome.runtime.sendMessage({ type: "SYNC_CATEGORIES" });
-
     await loadCategories();
     showNotification(`${normalized} → ${category} saved!`, "success");
   } catch (err) {
@@ -293,15 +268,11 @@ async function addCategory() {
 async function deleteCategory(domain) {
   try {
     const res = await fetch(`${DASH_API}/categories/${encodeURIComponent(domain)}`, {
-      method: "DELETE",
-      headers: getAuthHeaders()
+      method: "DELETE", headers: getAuthHeaders()
     });
-
     if (!res.ok) throw new Error("Delete failed");
 
-    // Sync background so it drops the mapping from memory
     chrome.runtime.sendMessage({ type: "SYNC_CATEGORIES" });
-
     await loadCategories();
     showNotification("Category removed!", "success");
   } catch (err) {
@@ -319,23 +290,15 @@ function getTodayKey() {
 
 async function loadReflection() {
   const today = getTodayKey();
-
   try {
-    const res = await fetch(`${DASH_API}/reflections/${today}`, {
-      headers: getAuthHeaders()
-    });
-
+    const res = await fetch(`${DASH_API}/reflections/${today}`, { headers: getAuthHeaders() });
     if (!res.ok) return;
 
     const reflection = await res.json();
-
     if (reflection && reflection.date) {
-      document.getElementById("reflectionDistractions").value =
-        reflection.distractions || "";
-      document.getElementById("reflectionWentWell").value =
-        reflection.wentWell || "";
-      document.getElementById("reflectionImprovements").value =
-        reflection.improvements || "";
+      document.getElementById("reflectionDistractions").value = reflection.distractions || "";
+      document.getElementById("reflectionWentWell").value     = reflection.wentWell     || "";
+      document.getElementById("reflectionImprovements").value = reflection.improvements || "";
     }
   } catch (err) {
     console.error("Failed to load reflection:", err);
@@ -343,24 +306,22 @@ async function loadReflection() {
 }
 
 async function saveReflection() {
-  const today = getTodayKey();
+  const today        = getTodayKey();
   const distractions = document.getElementById("reflectionDistractions").value;
-  const wentWell = document.getElementById("reflectionWentWell").value;
+  const wentWell     = document.getElementById("reflectionWentWell").value;
   const improvements = document.getElementById("reflectionImprovements").value;
 
   try {
     const res = await fetch(`${DASH_API}/reflections`, {
-      method: "POST",
+      method:  "POST",
       headers: getAuthHeaders(),
-      body: JSON.stringify({ date: today, distractions, wentWell, improvements })
+      body:    JSON.stringify({ date: today, distractions, wentWell, improvements })
     });
-
     if (!res.ok) throw new Error("Save failed");
 
     const savedMsg = document.getElementById("reflectionSaved");
     savedMsg.style.display = "block";
     setTimeout(() => { savedMsg.style.display = "none"; }, 3000);
-
     showNotification("Reflection saved!", "success");
   } catch (err) {
     console.error("Failed to save reflection:", err);
@@ -372,23 +333,22 @@ async function saveReflection() {
    WEEKLY SUMMARY
 ========================= */
 async function loadWeeklySummary() {
-  const today = new Date();
+  const today   = new Date();
   const weekAgo = new Date(today);
   weekAgo.setDate(weekAgo.getDate() - 7);
 
   const startDate = weekAgo.toISOString().split("T")[0];
-  const endDate = today.toISOString().split("T")[0];
+  const endDate   = today.toISOString().split("T")[0];
 
   try {
     const res = await fetch(
       `${DASH_API}/reflections?startDate=${startDate}&endDate=${endDate}`,
       { headers: getAuthHeaders() }
     );
-
     if (!res.ok) throw new Error("Failed to load summary");
 
     const reflections = await res.json();
-    const container = document.getElementById("weeklySummary");
+    const container   = document.getElementById("weeklySummary");
 
     if (!reflections || reflections.length === 0) {
       container.innerHTML = `<p class="loading-text">No reflections yet. Start journaling!</p>`;
@@ -396,19 +356,18 @@ async function loadWeeklySummary() {
     }
 
     container.innerHTML = "";
-
     reflections.slice(0, 5).forEach(ref => {
-      const item = document.createElement("div");
+      const item    = document.createElement("div");
       item.className = "summary-item";
 
-      const date = document.createElement("div");
-      date.className = "summary-date";
+      const date    = document.createElement("div");
+      date.className   = "summary-date";
       date.textContent = formatDate(ref.date);
 
       const content = document.createElement("div");
       content.style.cssText = "font-size: 13px; color: var(--text-secondary); margin-top: 4px;";
       content.innerHTML = [
-        ref.wentWell ? `✅ ${ref.wentWell.substring(0, 80)}${ref.wentWell.length > 80 ? "..." : ""}` : "",
+        ref.wentWell    ? `✅ ${ref.wentWell.substring(0, 80)}${ref.wentWell.length > 80 ? "..." : ""}`       : "",
         ref.distractions ? `<br>⚠️ ${ref.distractions.substring(0, 60)}${ref.distractions.length > 60 ? "..." : ""}` : ""
       ].filter(Boolean).join("");
 
@@ -422,7 +381,7 @@ async function loadWeeklySummary() {
 }
 
 function formatDate(dateStr) {
-  // BUG FIX: Adding T00:00:00 prevents timezone offset causing wrong day display
+  // Adding T00:00:00 prevents timezone offset causing wrong day display
   const date = new Date(dateStr + "T00:00:00");
   return date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
 }
@@ -434,9 +393,9 @@ function formatTime(ms) {
   if (typeof ms !== "number" || isNaN(ms) || ms <= 0) return "0 sec";
   const seconds = Math.floor(ms / 1000);
   const minutes = Math.floor(seconds / 60);
-  const hours = Math.floor(minutes / 60);
+  const hours   = Math.floor(minutes / 60);
 
-  if (hours > 0) return `${hours}h ${minutes % 60}m`;
+  if (hours   > 0) return `${hours}h ${minutes % 60}m`;
   if (minutes > 0) return `${minutes} min`;
   return `${seconds} sec`;
 }
@@ -449,8 +408,8 @@ function getDateKey(offset = 0) {
 
 function calculateProductivity(categoryTime) {
   const productive = (categoryTime.Learning || 0) + (categoryTime.Development || 0);
-  const negative = categoryTime.Distraction || 0;
-  const total = productive + negative;
+  const negative   = categoryTime.Distraction || 0;
+  const total      = productive + negative;
   return total === 0 ? 0 : Math.round((productive / total) * 100);
 }
 
@@ -464,70 +423,80 @@ function getProductivityMessage(score) {
 
 /* =========================
    DASHBOARD
+
+   FIX: Before reading storage, send GET_LIVE_TIME to the
+   background script. This forces an immediate flush of the
+   in-memory bufferTime to chrome.storage. Without this,
+   the dashboard reads data up to 10 seconds behind the
+   actual time being tracked — which is why you saw "10 sec"
+   instead of "20 min".
 ========================= */
 function loadDashboard() {
   document.getElementById("totalTime").textContent = "Updating...";
   const range = document.getElementById("rangeSelect")?.value || "today";
 
-  chrome.storage.local.get(["timeData"], (res) => {
-    const rawData = res.timeData || {};
+  // Step 1: Force background to flush its live buffer FIRST
+  chrome.runtime.sendMessage({ type: "GET_LIVE_TIME" }, () => {
+    // Step 2: Now read storage — it has the latest data
+    chrome.storage.local.get(["timeData"], (res) => {
+      const rawData = res.timeData || {};
 
-    // Support both old (non-date-keyed) and new (date-keyed) storage formats
-    const isDateBased = Object.keys(rawData).some(k => /^\d{4}-\d{2}-\d{2}$/.test(k));
-    const allData = isDateBased ? rawData : { [getDateKey(0)]: rawData };
+      const isDateBased = Object.keys(rawData).some(k => /^\d{4}-\d{2}-\d{2}$/.test(k));
+      const allData     = isDateBased ? rawData : { [getDateKey(0)]: rawData };
 
-    let days = [];
-    if (range === "today") days = [getDateKey(0)];
-    else if (range === "yesterday") days = [getDateKey(1)];
-    else if (range === "7days") days = Array.from({ length: 7 }, (_, i) => getDateKey(i));
-    else if (range === "30days") days = Array.from({ length: 30 }, (_, i) => getDateKey(i));
+      let days = [];
+      if      (range === "today")   days = [getDateKey(0)];
+      else if (range === "yesterday") days = [getDateKey(1)];
+      else if (range === "7days")   days = Array.from({ length: 7  }, (_, i) => getDateKey(i));
+      else if (range === "30days")  days = Array.from({ length: 30 }, (_, i) => getDateKey(i));
 
-    const categoryTime = { Learning: 0, Distraction: 0, Development: 0, Other: 0 };
-    const siteMap = {};
+      const categoryTime = { Learning: 0, Distraction: 0, Development: 0, Other: 0 };
+      const siteMap      = {};
 
-    days.forEach(day => {
-      const dayData = allData[day] || {};
-      for (const site in dayData) {
-        const entry = dayData[site];
-        const time = typeof entry === "number" ? entry : (entry.time || 0);
-        const category = (typeof entry === "object" && entry.category) ? entry.category : "Other";
+      days.forEach(day => {
+        const dayData = allData[day] || {};
+        for (const site in dayData) {
+          const entry    = dayData[site];
+          const time     = typeof entry === "number" ? entry : (entry.time || 0);
+          const category = (typeof entry === "object" && entry.category) ? entry.category : "Other";
 
-        categoryTime[category] = (categoryTime[category] || 0) + time;
-        siteMap[site] = (siteMap[site] || 0) + time;
-      }
-    });
-
-    const totalTime = Object.values(categoryTime).reduce((a, b) => a + b, 0);
-
-    document.getElementById("totalTime").textContent = formatTime(totalTime);
-    document.getElementById("learningTime").textContent = formatTime(categoryTime.Learning);
-    document.getElementById("distractionTime").textContent = formatTime(categoryTime.Distraction);
-    document.getElementById("developmentTime").textContent = formatTime(categoryTime.Development);
-    document.getElementById("otherTime").textContent = formatTime(categoryTime.Other);
-
-    const score = calculateProductivity(categoryTime);
-    document.getElementById("productivityScore").textContent = score;
-    document.getElementById("scoreDesc").textContent = getProductivityMessage(score);
-
-    const ul = document.getElementById("topSites");
-    ul.innerHTML = "";
-
-    const sorted = Object.entries(siteMap)
-      .filter(([, time]) => time > 0)
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 8);
-
-    if (sorted.length === 0) {
-      ul.innerHTML = '<li style="color: var(--text-secondary); font-size: 13px;">No data for this period</li>';
-    } else {
-      sorted.forEach(([site, time]) => {
-        const li = document.createElement("li");
-        li.innerHTML = `<span>${site}</span><span style="font-weight:600;">${formatTime(time)}</span>`;
-        ul.appendChild(li);
+          categoryTime[category]  = (categoryTime[category]  || 0) + time;
+          siteMap[site]           = (siteMap[site]           || 0) + time;
+        }
       });
-    }
 
-    renderChart(categoryTime);
+      const totalTime = Object.values(categoryTime).reduce((a, b) => a + b, 0);
+
+      document.getElementById("totalTime").textContent       = formatTime(totalTime);
+      document.getElementById("learningTime").textContent    = formatTime(categoryTime.Learning);
+      document.getElementById("distractionTime").textContent = formatTime(categoryTime.Distraction);
+      document.getElementById("developmentTime").textContent = formatTime(categoryTime.Development);
+      document.getElementById("otherTime").textContent       = formatTime(categoryTime.Other);
+
+      const score = calculateProductivity(categoryTime);
+      document.getElementById("productivityScore").textContent = score;
+      document.getElementById("scoreDesc").textContent         = getProductivityMessage(score);
+
+      const ul = document.getElementById("topSites");
+      ul.innerHTML = "";
+
+      const sorted = Object.entries(siteMap)
+        .filter(([, time]) => time > 0)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 8);
+
+      if (sorted.length === 0) {
+        ul.innerHTML = '<li style="color: var(--text-secondary); font-size: 13px;">No data for this period</li>';
+      } else {
+        sorted.forEach(([site, time]) => {
+          const li = document.createElement("li");
+          li.innerHTML = `<span>${site}</span><span style="font-weight:600;">${formatTime(time)}</span>`;
+          ul.appendChild(li);
+        });
+      }
+
+      renderChart(categoryTime);
+    });
   });
 }
 
@@ -539,23 +508,22 @@ function renderChart(categoryTime) {
   if (!canvas || typeof Chart === "undefined") return;
 
   const data = [
-    Math.floor(categoryTime.Learning / 60000),
+    Math.floor(categoryTime.Learning    / 60000),
     Math.floor(categoryTime.Distraction / 60000),
     Math.floor(categoryTime.Development / 60000),
-    Math.floor(categoryTime.Other / 60000)
+    Math.floor(categoryTime.Other       / 60000)
   ];
 
-  // Don't render chart if all values are 0
   const hasData = data.some(v => v > 0);
+  const ctx     = canvas.getContext("2d");
 
-  const ctx = canvas.getContext("2d");
   if (timeChartInstance) timeChartInstance.destroy();
 
   if (!hasData) {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.fillStyle = "#94a3b8";
-    ctx.textAlign = "center";
-    ctx.font = "14px sans-serif";
+    ctx.fillStyle  = "#94a3b8";
+    ctx.textAlign  = "center";
+    ctx.font       = "14px sans-serif";
     ctx.fillText("No data yet", canvas.width / 2, canvas.height / 2);
     return;
   }
@@ -565,19 +533,19 @@ function renderChart(categoryTime) {
     data: {
       labels: ["📚 Learning", "⚠️ Distraction", "💻 Development", "📦 Other"],
       datasets: [{
-        label: "Time (minutes)",
+        label:           "Time (minutes)",
         data,
         backgroundColor: ["#22c55e", "#ef4444", "#3b82f6", "#f97316"],
-        borderWidth: 0
+        borderWidth:     0
       }]
     },
     options: {
-      responsive: true,
+      responsive:          true,
       maintainAspectRatio: true,
       plugins: {
         legend: {
           position: "bottom",
-          labels: { padding: 15, font: { size: 13 } }
+          labels:   { padding: 15, font: { size: 13 } }
         }
       }
     }
@@ -588,22 +556,20 @@ function renderChart(categoryTime) {
    FOCUS MODE
 ========================= */
 function updateFocusButtons(isOn, locked = false) {
-  const startBtn = document.getElementById("startFocus");
-  const stopBtn = document.getElementById("stopFocus");
-  const focusBtn = document.getElementById("focusBtn");
+  const startBtn  = document.getElementById("startFocus");
+  const stopBtn   = document.getElementById("stopFocus");
+  const focusBtn  = document.getElementById("focusBtn");
   const statusInd = document.querySelector(".status-indicator");
 
-  if (startBtn) startBtn.disabled = isOn;
-  if (stopBtn) stopBtn.disabled = !isOn || locked;
+  if (startBtn)  startBtn.disabled  = isOn;
+  if (stopBtn)   stopBtn.disabled   = !isOn || locked;
 
   if (focusBtn) {
     focusBtn.textContent = locked ? "🔒 FOCUS LOCKED" :
       isOn ? "✅ FOCUS MODE ON" : "⭕ FOCUS MODE OFF";
   }
 
-  if (statusInd) {
-    statusInd.classList.toggle("active", isOn);
-  }
+  if (statusInd) statusInd.classList.toggle("active", isOn);
 }
 
 function initFocusControls() {
@@ -614,14 +580,12 @@ function initFocusControls() {
   });
 
   document.getElementById("hardFocus")?.addEventListener("click", () => {
-    const input = prompt("Hard Focus duration (minutes, min 5):", "25");
+    const input   = prompt("Hard Focus duration (minutes, min 5):", "25");
     const minutes = parseInt(input, 10);
-
     if (isNaN(minutes) || minutes < 5) {
       showNotification("Minimum hard focus time is 5 minutes", "error");
       return;
     }
-
     chrome.runtime.sendMessage({ type: "FOCUS_ON", duration: minutes, hard: true }, (res) => {
       if (res?.success) showNotification(`Hard focus started for ${minutes} minutes!`, "success");
     });
@@ -642,18 +606,12 @@ function initFocusControls() {
 /* =========================
    BLOCKED SITES
 ========================= */
-
-// Normalize any input (full URL, with/without www, just domain name) to bare domain
 function normalizeSiteInput(raw) {
   let s = raw.trim().toLowerCase();
-  // Add protocol so URL() can parse it if missing
-  if (!s.startsWith("http://") && !s.startsWith("https://")) {
-    s = "https://" + s;
-  }
+  if (!s.startsWith("http://") && !s.startsWith("https://")) s = "https://" + s;
   try {
     return new URL(s).hostname.replace(/^www\./, "");
   } catch {
-    // Fallback: strip manually
     return raw.trim().toLowerCase()
       .replace(/^https?:\/\//, "")
       .replace(/^www\./, "")
@@ -666,18 +624,10 @@ async function loadBlockedSites() {
   const list = document.getElementById("blockedSitesList");
 
   try {
-    // STEP 1 — Fetch sites from server (awaited properly)
-    const res = await fetch(`${DASH_API}/blocked-sites`, {
-      headers: getAuthHeaders()
-    });
-
+    const res = await fetch(`${DASH_API}/blocked-sites`, { headers: getAuthHeaders() });
     if (!res.ok) throw new Error(`Server returned ${res.status}`);
 
     const sites = await res.json();
-
-    // STEP 2 — Render immediately with sites data. Do NOT nest this inside
-    // sendMessage callback — the MV3 service worker may be sleeping and the
-    // callback might never fire, leaving the list blank forever.
     list.innerHTML = "";
 
     if (!Array.isArray(sites) || sites.length === 0) {
@@ -687,32 +637,28 @@ async function loadBlockedSites() {
         const li = document.createElement("li");
         li.style.cssText = "display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--border);";
 
-        const span = document.createElement("span");
-        span.textContent = site;
+        const span        = document.createElement("span");
+        span.textContent  = site;
         span.style.fontSize = "13px";
 
-        const removeBtn = document.createElement("button");
-        removeBtn.textContent = "❌";
+        const removeBtn   = document.createElement("button");
+        removeBtn.textContent  = "❌";
         removeBtn.dataset.site = site;
         removeBtn.style.cssText = "background:none;border:none;cursor:pointer;font-size:14px;padding:2px 6px;";
 
         removeBtn.addEventListener("click", async () => {
-          // Check focus state at click time — not at render time
           chrome.runtime.sendMessage({ type: "GET_FOCUS_STATUS" }, async (statusRes) => {
             const focusOn = statusRes?.status || false;
             if (focusOn) {
               showNotification("Stop Focus Mode first to remove sites", "error");
               return;
             }
-
             try {
               const delRes = await fetch(
                 `${DASH_API}/blocked-sites/${encodeURIComponent(site)}`,
                 { method: "DELETE", headers: getAuthHeaders() }
               );
-
               if (!delRes.ok) throw new Error("Delete failed");
-
               showNotification(`${site} removed`, "success");
               loadBlockedSites();
             } catch (err) {
@@ -728,13 +674,12 @@ async function loadBlockedSites() {
       });
     }
 
-    // STEP 3 — Separately update button disabled state based on focus status
-    // (best-effort — if service worker is slow, buttons still show, just not disabled)
+    // Update disabled state based on focus status
     chrome.runtime.sendMessage({ type: "GET_FOCUS_STATUS" }, (statusRes) => {
       const focusOn = statusRes?.status || false;
       list.querySelectorAll("button[data-site]").forEach(btn => {
-        btn.disabled = focusOn;
-        btn.title = focusOn ? "Stop Focus Mode to remove sites" : "Remove site";
+        btn.disabled      = focusOn;
+        btn.title         = focusOn ? "Stop Focus Mode to remove sites" : "Remove site";
         btn.style.opacity = focusOn ? "0.4" : "1";
       });
     });
@@ -750,9 +695,9 @@ async function loadBlockedSites() {
 ========================= */
 function downloadFile(content, filename, type) {
   const blob = new Blob([content], { type });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement("a");
+  a.href     = url;
   a.download = filename;
   a.click();
   URL.revokeObjectURL(url);
@@ -763,7 +708,7 @@ function downloadFile(content, filename, type) {
 ========================= */
 function openSettings() {
   document.getElementById("settingsModal").classList.add("active");
-  loadCategories(); // Refresh categories when settings opens
+  loadCategories();
 }
 
 function closeSettings() {
@@ -776,9 +721,8 @@ function closeSettings() {
 function initEventListeners() {
   // Settings
   document.getElementById("settingsBtn")?.addEventListener("click", openSettings);
-  document.querySelector(".close-btn")?.addEventListener("click", closeSettings);
+  document.querySelector(".close-btn")?.addEventListener("click",   closeSettings);
 
-  // Close modal on backdrop click
   document.getElementById("settingsModal")?.addEventListener("click", (e) => {
     if (e.target === document.getElementById("settingsModal")) closeSettings();
   });
@@ -797,16 +741,11 @@ function initEventListeners() {
     });
   });
 
-  // Save settings
   document.querySelector(".save-settings-btn")?.addEventListener("click", saveSettings);
-
-  // Logout button
   document.getElementById("logoutBtn")?.addEventListener("click", logout);
 
   // Categories
   document.getElementById("addCategoryBtn")?.addEventListener("click", addCategory);
-
-  // Allow Enter key in category domain input
   document.getElementById("categoryDomain")?.addEventListener("keypress", (e) => {
     if (e.key === "Enter") addCategory();
   });
@@ -814,19 +753,18 @@ function initEventListeners() {
   // Reflection
   document.getElementById("saveReflection")?.addEventListener("click", saveReflection);
 
-  // Dashboard
+  // Dashboard range/refresh
   document.getElementById("rangeSelect")?.addEventListener("change", loadDashboard);
-  document.getElementById("refreshBtn")?.addEventListener("click", loadDashboard);
+  document.getElementById("refreshBtn")?.addEventListener("click",   loadDashboard);
 
-  // Blocked sites - add
-  // CRITICAL FIX: POST directly to server instead of going through sendMessage.
-  // sendMessage relies on the MV3 service worker being awake. If it's sleeping,
-  // the callback never fires → site appears saved (toast shows) but list never
-  // reloads → looks like data was lost on refresh.
+  // ── ADD BLOCKED SITE ──
+  // FIX: Always reload authToken before the request so we're never sending
+  // without an Authorization header. Also improved error messaging so the user
+  // sees the actual server error (not just a generic "Failed to add site").
   async function addBlockedSite() {
-    const input = document.getElementById("blockSiteInput");
+    const input  = document.getElementById("blockSiteInput");
     const addBtn = document.getElementById("addBlockSite");
-    const raw = input.value.trim();
+    const raw    = input.value.trim();
 
     if (!raw) {
       showNotification("Please enter a domain", "error");
@@ -839,17 +777,25 @@ function initEventListeners() {
       return;
     }
 
-    addBtn.disabled = true;
+    // Always refresh token before request — critical for avoiding 401/500
+    await loadAuthToken();
+    if (!authToken) {
+      showNotification("Not logged in. Please refresh the page.", "error");
+      return;
+    }
+
+    addBtn.disabled    = true;
     addBtn.textContent = "Saving…";
 
     try {
       const res = await fetch(`${DASH_API}/blocked-sites`, {
-        method: "POST",
+        method:  "POST",
         headers: getAuthHeaders(),
-        body: JSON.stringify({ site: normalized })
+        body:    JSON.stringify({ site: normalized })
       });
 
       if (!res.ok) {
+        // FIX: Parse and show the actual server error message
         const errData = await res.json().catch(() => ({}));
         throw new Error(errData.error || `Server error (${res.status})`);
       }
@@ -857,24 +803,22 @@ function initEventListeners() {
       input.value = "";
       showNotification(`✅ ${normalized} added to block list`, "success");
 
-      // Reload list NOW — confirmed save, no race condition
+      // Reload the list immediately — confirmed save, no race condition
       await loadBlockedSites();
 
-      // Tell background to re-apply declarativeNetRequest rules (best-effort)
+      // Tell background to re-apply declarativeNetRequest rules
       chrome.runtime.sendMessage({ type: "ADD_BLOCK_SITE", site: normalized });
 
     } catch (err) {
       console.error("Failed to add blocked site:", err);
       showNotification(err.message || "Failed to add site", "error");
     } finally {
-      addBtn.disabled = false;
+      addBtn.disabled    = false;
       addBtn.textContent = "Add";
     }
   }
 
   document.getElementById("addBlockSite")?.addEventListener("click", addBlockedSite);
-
-  // Allow Enter key in block site input
   document.getElementById("blockSiteInput")?.addEventListener("keypress", (e) => {
     if (e.key === "Enter") addBlockedSite();
   });
@@ -896,8 +840,8 @@ function initEventListeners() {
       let csv = "Date,Website,Category,Time(ms),Time(minutes)\n";
       for (const date in timeData) {
         for (const site in timeData[date]) {
-          const e = timeData[date][site];
-          const ms = typeof e === "number" ? e : (e.time || 0);
+          const e   = timeData[date][site];
+          const ms  = typeof e === "number" ? e : (e.time || 0);
           const cat = typeof e === "object" ? (e.category || "Other") : "Other";
           csv += `${date},${site},${cat},${ms},${Math.round(ms / 60000 * 10) / 10}\n`;
         }
@@ -916,7 +860,6 @@ function initEventListeners() {
         { type: "GET_FOCUS_STATUS" },
         res => updateFocusButtons(res?.status, res?.locked)
       );
-      // Refresh blocked list to update button states
       loadBlockedSites();
     }
   });
