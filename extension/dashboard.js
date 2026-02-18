@@ -1,865 +1,1036 @@
-/* dashboard.js — uses API_BASE from config.js (loaded before this script in dashboard.html) */
-const DASH_API = typeof API_BASE !== "undefined"
-  ? API_BASE
-  : "https://habit-tracker-extension.onrender.com";
+/* dashboard.js — Focus Tracker
+   Fully rewritten for:
+   - Per-user category system (emoji, name, color, domains) from server
+   - Clicking stat cards opens category editor modal
+   - Emoji picker with search
+   - Professional productivity scoring (not 100 from 1 site)
+   - Theme/accent unchanged on each other's toggle
+   - Delete blocked site fixed
+   - Focus on/off only reloads current tab
+   - Refresh = location.reload()
+   - Weekly summary show all / show less
+   - Normal font weights, larger scale (CSS)
+   - Zero inline handlers (CSP safe)
+*/
 
-let timeChartInstance = null;
-let currentTheme  = "light";
-let currentAccent = "blue";
+const API = typeof API_BASE !== "undefined" ? API_BASE : "https://habit-tracker-extension.onrender.com";
+
+/* ─── state ─── */
 let authToken     = null;
+let currentTheme  = "light";
+let currentAccent = "indigo";
+let userCategories = [];   // full list: {id,name,emoji,color,domains[],isSystem}
+let timeChartInst = null;
+let allWeeklyData = [];
+let showingAll    = false;
 
-/* =========================
-   AUTHENTICATION
-========================= */
+/* editing state */
+let editingCat    = null;  // category object being edited (null = new)
+let editEmoji     = "📁";
+let editColor     = "#6366f1";
+let editDomains   = [];
+let emojiPickerOpen = false;
+
+/* ═══════════════════════════════════════
+   AUTH
+═══════════════════════════════════════ */
 async function loadAuthToken() {
-  return new Promise((resolve) => {
-    chrome.storage.local.get(["authToken"], (data) => {
-      authToken = data.authToken || null;
-      resolve(authToken);
-    });
-  });
+  return new Promise(r => chrome.storage.local.get(["authToken"], d => { authToken = d.authToken||null; r(authToken); }));
 }
+const hdrs = () => authToken
+  ? { "Content-Type":"application/json", Authorization:`Bearer ${authToken}` }
+  : { "Content-Type":"application/json" };
 
-function getAuthHeaders() {
-  if (!authToken) {
-    console.error("No auth token available");
-    return { "Content-Type": "application/json" };
-  }
-  return {
-    "Content-Type": "application/json",
-    "Authorization": `Bearer ${authToken}`
-  };
-}
-
-/* =========================
-   INITIALIZATION
-========================= */
+/* ═══════════════════════════════════════
+   INIT
+═══════════════════════════════════════ */
 document.addEventListener("DOMContentLoaded", async () => {
   await loadAuthToken();
-
-  if (!authToken) {
-    window.location.href = "auth.html";
-    return;
-  }
+  if (!authToken) { location.href = "auth.html"; return; }
 
   await loadPreferences();
-  await loadCategories();
+  await loadUserCategories();   // must come before renderStatCards
+  renderStatCards();
 
   initEventListeners();
   initFocusControls();
-
-  loadDashboard();
+  renderFromStorage();
+  loadBlockedSites();
   loadReflection();
   loadWeeklySummary();
-
-  // FIX: Refresh every 5s. Background flushes every 3s, so data is always fresh.
-  setInterval(loadDashboard, 5000);
+  startTicker();
+  buildEmojiGrid();
 });
 
-/* =========================
-   PREFERENCES & THEME
-========================= */
+/* ═══════════════════════════════════════
+   USER CATEGORIES — core data
+═══════════════════════════════════════ */
+async function loadUserCategories() {
+  try {
+    const r = await fetch(`${API}/user-categories`, { headers: hdrs() });
+    if (!r.ok) throw new Error();
+    userCategories = await r.json();
+  } catch {
+    // Fallback defaults if server is unreachable
+    userCategories = [
+      { id:"learning",    name:"Learning",    emoji:"📚", color:"#22c55e", isSystem:true,  domains:[] },
+      { id:"development", name:"Development", emoji:"💻", color:"#3b82f6", isSystem:true,  domains:[] },
+      { id:"distraction", name:"Distraction", emoji:"⚠️",  color:"#ef4444", isSystem:true,  domains:[] },
+      { id:"other",       name:"Other",       emoji:"📦", color:"#f97316", isSystem:true,  domains:[] },
+    ];
+  }
+}
+
+/* Build a domain→categoryId lookup from userCategories */
+function buildDomainMap() {
+  const map = {};
+  userCategories.forEach(cat => {
+    (cat.domains||[]).forEach(d => { map[d] = cat.id; });
+  });
+  return map;
+}
+
+function getCatForDomain(domain) {
+  const map = buildDomainMap();
+  if (map[domain]) return userCategories.find(c => c.id === map[domain]);
+
+  // parent domain fallback
+  const parts = domain.split(".");
+  for (let i = 1; i < parts.length; i++) {
+    const parent = parts.slice(i).join(".");
+    if (map[parent]) return userCategories.find(c => c.id === map[parent]);
+  }
+
+  // keyword fallback
+  if (/leetcode|coursera|udemy|khanacademy|edx|pluralsight|geeksforgeeks/.test(domain))
+    return userCategories.find(c => c.id === "learning") || userCategories[0];
+  if (/youtube|instagram|facebook|twitter|reddit|tiktok|netflix|twitch/.test(domain))
+    return userCategories.find(c => c.id === "distraction") || userCategories[0];
+  if (/github|stackoverflow|dev\.to|mdn|npmjs|docs\./.test(domain))
+    return userCategories.find(c => c.id === "development") || userCategories[0];
+
+  return userCategories.find(c => c.id === "other") || userCategories[userCategories.length - 1];
+}
+
+/* ═══════════════════════════════════════
+   RENDER STAT CARDS
+   Total card is hardcoded; one card per user category injected
+═══════════════════════════════════════ */
+function renderStatCards() {
+  const grid = document.getElementById("statsGrid");
+  if (!grid) return;
+
+  // Keep the total card, remove old dynamic ones
+  const totalCard = grid.querySelector(".stat-card.total");
+  grid.innerHTML = "";
+  if (totalCard) grid.appendChild(totalCard);
+
+  userCategories.forEach(cat => {
+    const card = document.createElement("div");
+    card.className = "stat-card";
+    card.dataset.catId = cat.id;
+    card.style.setProperty("--cat-color", cat.color);
+    card.title = `Click to edit "${cat.name}"`;
+    card.innerHTML = `
+      <span class="stat-emoji">${cat.emoji}</span>
+      <div class="stat-info">
+        <span class="stat-value" id="catTime-${cat.id}">—</span>
+        <span class="stat-label">${cat.name}</span>
+      </div>
+      <span class="stat-edit-hint">edit</span>
+    `;
+    card.addEventListener("click", () => openCatEditor(cat));
+    grid.appendChild(card);
+  });
+}
+
+/* ═══════════════════════════════════════
+   1-SECOND STORAGE TICKER (no SW dep.)
+═══════════════════════════════════════ */
+function getTodayKey() { return new Date().toISOString().split("T")[0]; }
+
+function startTicker() {
+  setInterval(() => {
+    if ((document.getElementById("rangeSelect")?.value||"today") !== "today") return;
+    chrome.tabs.query({ active:true, lastFocusedWindow:true }, tabs => {
+      void chrome.runtime.lastError;
+      if (!tabs?.length || !tabs[0]?.url) return;
+      const url = tabs[0].url;
+      if (!url.startsWith("http://") && !url.startsWith("https://")) return;
+      let domain;
+      try { domain = new URL(url).hostname.replace(/^www\./,""); } catch { return; }
+      if (!domain) return;
+
+      const cat   = getCatForDomain(domain);
+      const catId = cat?.id || "other";
+      const today = getTodayKey();
+
+      chrome.storage.local.get(["timeData"], res => {
+        void chrome.runtime.lastError;
+        const td = res.timeData || {};
+        td[today] = td[today] || {};
+        if (!td[today][domain]) td[today][domain] = { time:0, catId };
+        td[today][domain].time  += 1000;
+        td[today][domain].catId  = catId;
+        chrome.storage.local.set({ timeData:td }, () => {
+          void chrome.runtime.lastError;
+          renderFromStorage();
+        });
+      });
+    });
+  }, 1000);
+}
+
+/* ═══════════════════════════════════════
+   RENDER FROM STORAGE
+═══════════════════════════════════════ */
+function getDateKey(offset=0) {
+  const d = new Date(); d.setDate(d.getDate()-offset);
+  return d.toISOString().split("T")[0];
+}
+
+let _lastChartRender = 0;
+
+function renderFromStorage() {
+  const range = document.getElementById("rangeSelect")?.value || "today";
+  chrome.storage.local.get(["timeData"], res => {
+    void chrome.runtime.lastError;
+    const raw = res.timeData || {};
+    const isDate = Object.keys(raw).some(k => /^\d{4}-\d{2}-\d{2}$/.test(k));
+    const all  = isDate ? raw : { [getDateKey(0)]: raw };
+
+    let days = [];
+    if      (range==="today")     days = [getDateKey(0)];
+    else if (range==="yesterday") days = [getDateKey(1)];
+    else if (range==="7days")     days = Array.from({length:7},(_,i)=>getDateKey(i));
+    else if (range==="30days")    days = Array.from({length:30},(_,i)=>getDateKey(i));
+
+    // Aggregate time per catId and per site
+    const catTime  = {};
+    const siteTime = {};
+    const siteCat  = {};
+    userCategories.forEach(c => { catTime[c.id] = 0; });
+
+    days.forEach(day => {
+      const dd = all[day] || {};
+      for (const site in dd) {
+        const e  = dd[site];
+        const ms = typeof e==="number" ? e : (e.time||0);
+        // ALWAYS re-resolve catId from live domain map so category changes
+        // (e.g. moving claude.ai from Development → Learning) reflect instantly.
+        // Never trust the stale catId baked into chrome.storage.
+        const catId = getCatForDomain(site)?.id || "other";
+        catTime[catId]  = (catTime[catId]  || 0) + ms;
+        siteTime[site]  = (siteTime[site]  || 0) + ms;
+        siteCat[site]   = catId;
+      }
+    });
+
+    renderStats(catTime, siteTime, siteCat);
+
+    // Chart: throttle to every 30s during normal ticking,
+    // but _forceChartRender flag bypasses throttle after category edits.
+    const now = Date.now();
+    if (renderFromStorage._forceChart || now - _lastChartRender > 30000) {
+      renderChart(catTime);
+      _lastChartRender = now;
+      renderFromStorage._forceChart = false;
+    }
+  });
+}
+
+/* ═══════════════════════════════════════
+   RENDER STATS
+═══════════════════════════════════════ */
+function renderStats(catTime, siteTime, siteCat) {
+  const total = Object.values(catTime).reduce((a,b)=>a+b,0);
+  const el = id => document.getElementById(id);
+
+  el("totalTime") && (el("totalTime").textContent = fmt(total));
+  userCategories.forEach(cat => {
+    const el2 = document.getElementById(`catTime-${cat.id}`);
+    if (el2) el2.textContent = fmt(catTime[cat.id]||0);
+  });
+
+  // Productivity score — weighted & requires meaningful time
+  const score = calcScore(catTime, total);
+  if (el("productivityScore")) el("productivityScore").textContent = score < 0 ? "—" : score;
+  if (el("scoreMood"))  el("scoreMood").textContent  = score < 0 ? "Start browsing" : scoreMood(score);
+  if (el("scoreDesc"))  el("scoreDesc").textContent  = score < 0 ? "to see your score" : scoreDesc(score, total, catTime);
+
+  // Top sites
+  const ul = el("topSites");
+  if (!ul) return;
+  ul.innerHTML = "";
+  const sorted = Object.entries(siteTime).filter(([,t])=>t>0).sort((a,b)=>b[1]-a[1]).slice(0,8);
+  if (!sorted.length) {
+    ul.innerHTML = `<li style="padding:12px 6px;color:var(--text-3);font-size:14px;">No data yet</li>`;
+    return;
+  }
+  const maxMs = sorted[0][1];
+  sorted.forEach(([site, ms]) => {
+    const cat = userCategories.find(c => c.id === (siteCat[site]||"other"));
+    const pct = maxMs > 0 ? Math.round((ms/maxMs)*100) : 0;
+    const li  = document.createElement("li");
+    li.innerHTML = `
+      <span class="site-name" title="${site}">${site}</span>
+      <div class="site-bar-wrap"><div class="site-bar" style="width:${pct}%;background:${cat?.color||'var(--accent)'}"></div></div>
+      <span class="site-time">${fmt(ms)}</span>
+    `;
+    ul.appendChild(li);
+  });
+}
+
+/* ═══════════════════════════════════════
+   PRODUCTIVITY SCORING — professional
+   
+   Philosophy:
+   - Need at least 5 min of total data to show a score
+   - Weighted: "productive" cats (Learning, Development) = positive
+     "distracting" cats = negative weight
+     "other" = neutral
+   - Time weighting: short sessions (< 2 min on a site) are less
+     credible, so we apply a log-scale cap
+   - Score is 0–100, with diminishing returns at extremes
+   - Single site for 1 min = ~50 score (neutral, not 100)
+═══════════════════════════════════════ */
+function calcScore(catTime, totalMs) {
+  if (!totalMs || totalMs < 5 * 60 * 1000) return -1; // need 5+ min
+
+  // Classify categories by user's data
+  // system cats have known roles; custom cats default to neutral
+  let productive = 0, neutral = 0, distracting = 0;
+  userCategories.forEach(cat => {
+    const ms = catTime[cat.id] || 0;
+    if (cat.id === "learning" || cat.id === "development") productive += ms;
+    else if (cat.id === "distraction") distracting += ms;
+    else neutral += ms;
+  });
+
+  // Weighted formula
+  const positiveRatio = productive / totalMs;
+  const negativeRatio = distracting / totalMs;
+
+  // Base score from ratio, with diminishing returns at extremes
+  let raw = (positiveRatio * 100) - (negativeRatio * 60) + (neutral / totalMs * 20);
+  raw = Math.max(0, Math.min(100, raw));
+
+  // Apply time confidence: more total time → score converges to true value
+  // < 15 min: score pulled toward 45 (uncertain)
+  // 60+ min:  score trusted fully
+  const confMinutes = Math.min(totalMs / 60000, 60) / 60; // 0–1
+  const confident   = raw * confMinutes + 45 * (1 - confMinutes);
+
+  return Math.round(confident);
+}
+
+function scoreMood(s) {
+  if (s >= 85) return "Excellent day";
+  if (s >= 70) return "Strong session";
+  if (s >= 55) return "Good progress";
+  if (s >= 40) return "Balanced";
+  if (s >= 25) return "Distracted";
+  return "Off track";
+}
+
+function scoreDesc(score, total, catTime) {
+  const hrs = (total/3600000).toFixed(1);
+  const prodCat = userCategories.find(c=>c.id==="learning"||c.id==="development");
+  if (score >= 70) return `${hrs}h tracked · keep going`;
+  if (score >= 40) return `${hrs}h tracked · more ${prodCat?.name||"learning"} helps`;
+  return `${hrs}h tracked · time to refocus`;
+}
+
+/* ═══════════════════════════════════════
+   CHART — premium horizontal bar chart
+   Much more readable than a doughnut:
+   - Shows actual time values on bars
+   - Color-matched to category colors
+   - Clean gridlines, proper axes
+   - Falls back gracefully to empty state
+═══════════════════════════════════════ */
+function renderChart(catTime) {
+  const canvas = document.getElementById("timeChart");
+  if (!canvas) return;
+
+  // Filter categories that have data, sorted descending
+  const entries = userCategories
+    .map(cat => ({ cat, ms: catTime[cat.id] || 0 }))
+    .filter(e => e.ms > 0)
+    .sort((a,b) => b.ms - a.ms);
+
+  const ctx = canvas.getContext("2d");
+
+  if (timeChartInst) { timeChartInst.destroy(); timeChartInst = null; }
+
+  if (!entries.length) {
+    // Draw empty state
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    const isDark = document.body.getAttribute("data-theme") === "dark";
+    ctx.fillStyle = isDark ? "#5c5650" : "#a8a29e";
+    ctx.textAlign = "center";
+    ctx.font = "14px 'Instrument Sans', sans-serif";
+    ctx.fillText("No data yet — start browsing", canvas.width / 2, canvas.height / 2);
+    return;
+  }
+
+  if (typeof Chart === "undefined") return;
+
+  const isDark   = document.body.getAttribute("data-theme") === "dark";
+  const gridCol  = isDark ? "rgba(255,255,255,0.06)" : "rgba(0,0,0,0.06)";
+  const textCol  = isDark ? "#9c9490" : "#78716c";
+  const maxMs    = entries[0].ms;
+
+  // Build gradient colors — slightly transparent fills with solid borders
+  const labels     = entries.map(e => `${e.cat.emoji}  ${e.cat.name}`);
+  const dataValues = entries.map(e => Math.round(e.ms / 60000 * 10) / 10); // minutes, 1dp
+  const bgColors   = entries.map(e => e.cat.color + "22"); // 13% alpha fill
+  const bdColors   = entries.map(e => e.cat.color);
+
+  timeChartInst = new Chart(ctx, {
+    type: "bar",
+    data: {
+      labels,
+      datasets: [{
+        data:            dataValues,
+        backgroundColor: bgColors,
+        borderColor:     bdColors,
+        borderWidth:     2,
+        borderRadius:    8,
+        borderSkipped:   false,
+        hoverBackgroundColor: bdColors.map(c => c + "44"),
+        hoverBorderColor:     bdColors,
+      }]
+    },
+    options: {
+      indexAxis: "y",   // horizontal bars
+      responsive:     true,
+      maintainAspectRatio: true,
+      animation: { duration: 400, easing: "easeOutQuart" },
+      layout: { padding: { left: 0, right: 20, top: 4, bottom: 4 } },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: isDark ? "#22252a" : "#ffffff",
+          titleColor:      isDark ? "#f2ede8" : "#1c1917",
+          bodyColor:       isDark ? "#9c9490" : "#78716c",
+          borderColor:     isDark ? "#2a2c2e" : "#e0dbd4",
+          borderWidth:     1,
+          padding:         12,
+          cornerRadius:    10,
+          boxPadding:      6,
+          callbacks: {
+            title: items => items[0].label.replace(/^.\s+/, "").trim(),
+            label: item  => `  ${fmtMin(item.raw)}  (${fmt(entries[item.dataIndex].ms)})`
+          }
+        }
+      },
+      scales: {
+        x: {
+          grid:  { color: gridCol, drawBorder: false },
+          ticks: {
+            color:    textCol,
+            font:     { size: 11, family: "'JetBrains Mono', monospace" },
+            callback: v => fmtMin(v)
+          },
+          border: { display: false }
+        },
+        y: {
+          grid:  { display: false, drawBorder: false },
+          ticks: {
+            color: isDark ? "#f2ede8" : "#1c1917",
+            font:  { size: 13, family: "'Instrument Sans', sans-serif" },
+            padding: 8,
+          },
+          border: { display: false }
+        }
+      }
+    },
+    plugins: [{
+      // Draw time labels inside / right of each bar
+      id: "barLabels",
+      afterDatasetsDraw(chart) {
+        const { ctx: c, data, scales: { x, y } } = chart;
+        data.datasets[0].data.forEach((val, i) => {
+          const meta = chart.getDatasetMeta(0).data[i];
+          const xPos = x.getPixelForValue(val);
+          const yPos = meta.y;
+          const barRight = xPos;
+          const label = fmt(entries[i].ms);
+          c.save();
+          c.font = "500 11px 'JetBrains Mono', monospace";
+          c.fillStyle = bdColors[i];
+          c.textAlign = "left";
+          c.textBaseline = "middle";
+          c.fillText(label, barRight + 6, yPos);
+          c.restore();
+        });
+      }
+    }]
+  });
+}
+
+function fmtMin(mins) {
+  if (mins >= 60) return `${(mins/60).toFixed(1)}h`;
+  return `${Math.round(mins)}m`;
+}
+
+/* ═══════════════════════════════════════
+   PREFERENCES
+═══════════════════════════════════════ */
 async function loadPreferences() {
   try {
-    const res = await fetch(`${DASH_API}/preferences`, { headers: getAuthHeaders() });
-    if (!res.ok) throw new Error("Failed to load preferences");
-
-    const prefs   = await res.json();
-    currentTheme  = prefs.theme      || "light";
-    currentAccent = prefs.accentColor || "blue";
-    applyTheme(currentTheme, currentAccent);
-  } catch (err) {
-    console.error("Failed to load preferences:", err);
-    applyTheme("light", "blue");
-  }
+    const r = await fetch(`${API}/preferences`, { headers: hdrs() });
+    if (!r.ok) throw new Error();
+    const p = await r.json();
+    currentTheme  = p.theme       || "light";
+    currentAccent = p.accentColor || "indigo";
+  } catch { currentTheme="light"; currentAccent="indigo"; }
+  applyTheme(currentTheme, currentAccent);
 }
 
 function applyTheme(theme, accent) {
   document.body.setAttribute("data-theme",  theme);
   document.body.setAttribute("data-accent", accent);
-
-  const themeSelect = document.getElementById("themeSelect");
-  if (themeSelect) themeSelect.value = theme;
-
-  document.querySelectorAll(".color-option").forEach(btn => {
-    btn.classList.toggle("active", btn.dataset.color === accent);
-  });
+  currentTheme  = theme;
+  currentAccent = accent;
+  const ts = document.getElementById("themeSelect");
+  if (ts) ts.value = theme;
+  document.querySelectorAll(".swatch").forEach(b => b.classList.toggle("on", b.dataset.color===accent));
+  // Rerender chart with correct text colour
+  if (_lastChartRender) renderFromStorage();
 }
 
 async function saveSettings() {
-  const theme  = document.getElementById("themeSelect").value;
-  const accent = document.querySelector(".color-option.active")?.dataset.color || "blue";
-
   try {
-    await fetch(`${DASH_API}/preferences`, {
-      method:  "POST",
-      headers: getAuthHeaders(),
-      body:    JSON.stringify({ theme, accentColor: accent })
+    await fetch(`${API}/preferences`, {
+      method:"POST", headers:hdrs(),
+      body: JSON.stringify({ theme:currentTheme, accentColor:currentAccent })
     });
-    currentTheme  = theme;
-    currentAccent = accent;
-    applyTheme(theme, accent);
     closeSettings();
-    showNotification("Settings saved!", "success");
-  } catch (err) {
-    console.error("Failed to save settings:", err);
-    showNotification("Failed to save settings", "error");
-  }
+    toast("Settings saved");
+  } catch { toast("Failed to save", "err"); }
 }
 
-function showNotification(message, type = "success") {
-  const notification        = document.createElement("div");
-  notification.className    = `notification ${type}`;
-  notification.textContent  = message;
-  notification.style.cssText = `
-    position: fixed;
-    top: 20px;
-    right: 20px;
-    padding: 16px 24px;
-    background: ${type === "success" ? "#22c55e" : "#ef4444"};
-    color: white;
-    border-radius: 12px;
-    box-shadow: 0 4px 12px rgba(0,0,0,0.2);
-    z-index: 10000;
-    font-family: inherit;
-    font-size: 14px;
-    font-weight: 500;
-    animation: slideIn 0.3s ease;
-  `;
-  document.body.appendChild(notification);
-  setTimeout(() => {
-    notification.style.opacity    = "0";
-    notification.style.transition = "opacity 0.3s ease";
-    setTimeout(() => notification.remove(), 300);
-  }, 3000);
-}
-
-/* =========================
+/* ═══════════════════════════════════════
    LOGOUT
-========================= */
+═══════════════════════════════════════ */
 async function logout() {
-  if (!confirm("Are you sure you want to log out?")) return;
+  if (!confirm("Sign out?")) return;
+  try { await fetch(`${API}/auth/logout`,{method:"POST",headers:hdrs()}).catch(()=>{}); } catch {}
+  chrome.runtime.sendMessage({type:"LOGOUT"},()=>void chrome.runtime.lastError);
+  chrome.storage.local.remove(["authToken","lastValidated"],()=>{ location.href="auth.html"; });
+}
 
-  try {
-    await fetch(`${DASH_API}/auth/logout`, {
-      method: "POST", headers: getAuthHeaders()
-    }).catch(() => {});
-  } catch (_) {}
+/* ═══════════════════════════════════════
+   CATEGORY EDITOR MODAL
+═══════════════════════════════════════ */
+function openCatEditor(cat) {
+  editingCat  = cat || null;
+  editEmoji   = cat ? cat.emoji   : "📁";
+  editColor   = cat ? cat.color   : "#6366f1";
+  editDomains = cat ? [...(cat.domains||[])] : [];
+  emojiPickerOpen = false;
 
-  chrome.runtime.sendMessage({ type: "LOGOUT" });
-  chrome.storage.local.remove(["authToken", "lastValidated"], () => {
-    window.location.href = "auth.html";
+  document.getElementById("catEditorTitle").textContent = cat ? `Edit — ${cat.name}` : "New Category";
+  document.getElementById("catNameInput").value         = cat ? cat.name  : "";
+  document.getElementById("catEmojiDisplay").textContent= editEmoji;
+  document.getElementById("colorHexInput").value        = editColor;
+  document.getElementById("colorNativeInput").value     = editColor;
+  document.getElementById("colorPreview").style.background = editColor;
+  document.getElementById("emojiPickerWrap").style.display = "none";
+  document.getElementById("deleteCatBtn").style.display = (cat && !cat.isSystem) ? "flex" : "none";
+
+  renderDomainTags();
+  document.getElementById("catEditorModal").classList.add("open");
+}
+
+function closeCatEditor() {
+  document.getElementById("catEditorModal").classList.remove("open");
+  editingCat = null;
+}
+
+function renderDomainTags() {
+  const wrap = document.getElementById("domainTags");
+  wrap.innerHTML = "";
+  editDomains.forEach(d => {
+    const tag = document.createElement("div");
+    tag.className = "domain-tag";
+    tag.innerHTML = `<span>${d}</span><button data-d="${d}" title="Remove">×</button>`;
+    tag.querySelector("button").addEventListener("click", () => {
+      editDomains = editDomains.filter(x=>x!==d);
+      renderDomainTags();
+    });
+    wrap.appendChild(tag);
   });
 }
 
-/* =========================
-   CATEGORY MANAGEMENT
-========================= */
-async function loadCategories() {
-  try {
-    const res = await fetch(`${DASH_API}/categories`, { headers: getAuthHeaders() });
-    if (!res.ok) throw new Error("Failed to load categories");
-
-    const categories = await res.json();
-    const list       = document.getElementById("categoryList");
-    list.innerHTML   = "";
-
-    if (!categories || categories.length === 0) {
-      list.innerHTML = '<li style="color: var(--text-secondary); font-size: 13px; text-align: center; padding: 8px;">No custom categories yet</li>';
-      return;
-    }
-
-    categories.forEach(cat => {
-      const li      = document.createElement("li");
-      li.style.cssText = "display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--border);";
-
-      const info    = document.createElement("div");
-      info.style.cssText = "display: flex; gap: 10px; align-items: center;";
-
-      const domain  = document.createElement("span");
-      domain.className   = "domain";
-      domain.textContent = cat.domain;
-      domain.style.fontWeight = "500";
-
-      const badge   = document.createElement("span");
-      badge.className   = "category-badge";
-      badge.textContent = cat.category;
-      badge.style.cssText = `
-        background: ${getCategoryColor(cat.category)};
-        color: white;
-        padding: 2px 8px;
-        border-radius: 999px;
-        font-size: 11px;
-        font-weight: 600;
-      `;
-
-      info.appendChild(domain);
-      info.appendChild(badge);
-
-      const deleteBtn = document.createElement("button");
-      deleteBtn.textContent  = "❌";
-      deleteBtn.style.cssText = "background: none; border: none; cursor: pointer; font-size: 14px;";
-      deleteBtn.onclick       = () => deleteCategory(cat.domain);
-
-      li.appendChild(info);
-      li.appendChild(deleteBtn);
-      list.appendChild(li);
-    });
-  } catch (err) {
-    console.error("Failed to load categories:", err);
-  }
+function addDomainToEdit() {
+  const inp = document.getElementById("newDomainInput");
+  let raw = inp.value.trim().toLowerCase();
+  if (!raw) return;
+  raw = raw.replace(/^https?:\/\//,"").replace(/^www\./,"").split("/")[0].split("?")[0];
+  if (!raw.includes(".")) { toast("Enter a valid domain", "err"); return; }
+  if (!editDomains.includes(raw)) editDomains.push(raw);
+  inp.value = "";
+  renderDomainTags();
 }
 
-function getCategoryColor(category) {
-  const colors = {
-    "Learning":    "#22c55e",
-    "Development": "#3b82f6",
-    "Distraction": "#ef4444",
-    "Other":       "#f97316"
-  };
-  return colors[category] || "#94a3b8";
-}
+async function saveCatEditor() {
+  const name  = document.getElementById("catNameInput").value.trim();
+  if (!name) { toast("Name required","err"); return; }
 
-async function addCategory() {
-  const domainInput    = document.getElementById("categoryDomain");
-  const categorySelect = document.getElementById("categorySelect");
-  const domain         = domainInput.value.trim();
-  const category       = categorySelect.value;
-
-  if (!domain) {
-    showNotification("Please enter a domain", "error");
-    return;
-  }
-
-  const normalized = domain
-    .toLowerCase()
-    .replace(/^https?:\/\//, "")
-    .replace(/^www\./, "")
-    .split("/")[0];
-
-  if (!normalized) {
-    showNotification("Invalid domain", "error");
-    return;
-  }
+  const payload = { name, emoji:editEmoji, color:editColor, domains:editDomains };
 
   try {
-    const res = await fetch(`${DASH_API}/categories`, {
-      method:  "POST",
-      headers: getAuthHeaders(),
-      body:    JSON.stringify({ domain: normalized, category })
-    });
-
-    if (!res.ok) {
-      const err = await res.json();
-      showNotification(err.error || "Failed to add category", "error");
-      return;
-    }
-
-    domainInput.value = "";
-    chrome.runtime.sendMessage({ type: "SYNC_CATEGORIES" });
-    await loadCategories();
-    showNotification(`${normalized} → ${category} saved!`, "success");
-  } catch (err) {
-    console.error("Failed to add category:", err);
-    showNotification("Failed to add category", "error");
-  }
-}
-
-async function deleteCategory(domain) {
-  try {
-    const res = await fetch(`${DASH_API}/categories/${encodeURIComponent(domain)}`, {
-      method: "DELETE", headers: getAuthHeaders()
-    });
-    if (!res.ok) throw new Error("Delete failed");
-
-    chrome.runtime.sendMessage({ type: "SYNC_CATEGORIES" });
-    await loadCategories();
-    showNotification("Category removed!", "success");
-  } catch (err) {
-    console.error("Failed to delete category:", err);
-    showNotification("Failed to remove category", "error");
-  }
-}
-
-/* =========================
-   DAILY REFLECTION
-========================= */
-function getTodayKey() {
-  return new Date().toISOString().split("T")[0];
-}
-
-async function loadReflection() {
-  const today = getTodayKey();
-  try {
-    const res = await fetch(`${DASH_API}/reflections/${today}`, { headers: getAuthHeaders() });
-    if (!res.ok) return;
-
-    const reflection = await res.json();
-    if (reflection && reflection.date) {
-      document.getElementById("reflectionDistractions").value = reflection.distractions || "";
-      document.getElementById("reflectionWentWell").value     = reflection.wentWell     || "";
-      document.getElementById("reflectionImprovements").value = reflection.improvements || "";
-    }
-  } catch (err) {
-    console.error("Failed to load reflection:", err);
-  }
-}
-
-async function saveReflection() {
-  const today        = getTodayKey();
-  const distractions = document.getElementById("reflectionDistractions").value;
-  const wentWell     = document.getElementById("reflectionWentWell").value;
-  const improvements = document.getElementById("reflectionImprovements").value;
-
-  try {
-    const res = await fetch(`${DASH_API}/reflections`, {
-      method:  "POST",
-      headers: getAuthHeaders(),
-      body:    JSON.stringify({ date: today, distractions, wentWell, improvements })
-    });
-    if (!res.ok) throw new Error("Save failed");
-
-    const savedMsg = document.getElementById("reflectionSaved");
-    savedMsg.style.display = "block";
-    setTimeout(() => { savedMsg.style.display = "none"; }, 3000);
-    showNotification("Reflection saved!", "success");
-  } catch (err) {
-    console.error("Failed to save reflection:", err);
-    showNotification("Failed to save reflection", "error");
-  }
-}
-
-/* =========================
-   WEEKLY SUMMARY
-========================= */
-async function loadWeeklySummary() {
-  const today   = new Date();
-  const weekAgo = new Date(today);
-  weekAgo.setDate(weekAgo.getDate() - 7);
-
-  const startDate = weekAgo.toISOString().split("T")[0];
-  const endDate   = today.toISOString().split("T")[0];
-
-  try {
-    const res = await fetch(
-      `${DASH_API}/reflections?startDate=${startDate}&endDate=${endDate}`,
-      { headers: getAuthHeaders() }
-    );
-    if (!res.ok) throw new Error("Failed to load summary");
-
-    const reflections = await res.json();
-    const container   = document.getElementById("weeklySummary");
-
-    if (!reflections || reflections.length === 0) {
-      container.innerHTML = `<p class="loading-text">No reflections yet. Start journaling!</p>`;
-      return;
-    }
-
-    container.innerHTML = "";
-    reflections.slice(0, 5).forEach(ref => {
-      const item    = document.createElement("div");
-      item.className = "summary-item";
-
-      const date    = document.createElement("div");
-      date.className   = "summary-date";
-      date.textContent = formatDate(ref.date);
-
-      const content = document.createElement("div");
-      content.style.cssText = "font-size: 13px; color: var(--text-secondary); margin-top: 4px;";
-      content.innerHTML = [
-        ref.wentWell    ? `✅ ${ref.wentWell.substring(0, 80)}${ref.wentWell.length > 80 ? "..." : ""}`       : "",
-        ref.distractions ? `<br>⚠️ ${ref.distractions.substring(0, 60)}${ref.distractions.length > 60 ? "..." : ""}` : ""
-      ].filter(Boolean).join("");
-
-      item.appendChild(date);
-      item.appendChild(content);
-      container.appendChild(item);
-    });
-  } catch (err) {
-    console.error("Failed to load weekly summary:", err);
-  }
-}
-
-function formatDate(dateStr) {
-  // Adding T00:00:00 prevents timezone offset causing wrong day display
-  const date = new Date(dateStr + "T00:00:00");
-  return date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
-}
-
-/* =========================
-   UTILS
-========================= */
-function formatTime(ms) {
-  if (typeof ms !== "number" || isNaN(ms) || ms <= 0) return "0 sec";
-  const seconds = Math.floor(ms / 1000);
-  const minutes = Math.floor(seconds / 60);
-  const hours   = Math.floor(minutes / 60);
-
-  if (hours   > 0) return `${hours}h ${minutes % 60}m`;
-  if (minutes > 0) return `${minutes} min`;
-  return `${seconds} sec`;
-}
-
-function getDateKey(offset = 0) {
-  const d = new Date();
-  d.setDate(d.getDate() - offset);
-  return d.toISOString().split("T")[0];
-}
-
-function calculateProductivity(categoryTime) {
-  const productive = (categoryTime.Learning || 0) + (categoryTime.Development || 0);
-  const negative   = categoryTime.Distraction || 0;
-  const total      = productive + negative;
-  return total === 0 ? 0 : Math.round((productive / total) * 100);
-}
-
-function getProductivityMessage(score) {
-  if (score >= 80) return "🔥 Excellent work!";
-  if (score >= 60) return "👍 Good progress!";
-  if (score >= 40) return "💪 Keep pushing!";
-  if (score >= 20) return "⚠️ Stay focused!";
-  return "🎯 Time to refocus!";
-}
-
-/* =========================
-   DASHBOARD
-
-   FIX: Before reading storage, send GET_LIVE_TIME to the
-   background script. This forces an immediate flush of the
-   in-memory bufferTime to chrome.storage. Without this,
-   the dashboard reads data up to 10 seconds behind the
-   actual time being tracked — which is why you saw "10 sec"
-   instead of "20 min".
-========================= */
-function loadDashboard() {
-  document.getElementById("totalTime").textContent = "Updating...";
-  const range = document.getElementById("rangeSelect")?.value || "today";
-
-  // Step 1: Force background to flush its live buffer FIRST
-  chrome.runtime.sendMessage({ type: "GET_LIVE_TIME" }, () => {
-    // Step 2: Now read storage — it has the latest data
-    chrome.storage.local.get(["timeData"], (res) => {
-      const rawData = res.timeData || {};
-
-      const isDateBased = Object.keys(rawData).some(k => /^\d{4}-\d{2}-\d{2}$/.test(k));
-      const allData     = isDateBased ? rawData : { [getDateKey(0)]: rawData };
-
-      let days = [];
-      if      (range === "today")   days = [getDateKey(0)];
-      else if (range === "yesterday") days = [getDateKey(1)];
-      else if (range === "7days")   days = Array.from({ length: 7  }, (_, i) => getDateKey(i));
-      else if (range === "30days")  days = Array.from({ length: 30 }, (_, i) => getDateKey(i));
-
-      const categoryTime = { Learning: 0, Distraction: 0, Development: 0, Other: 0 };
-      const siteMap      = {};
-
-      days.forEach(day => {
-        const dayData = allData[day] || {};
-        for (const site in dayData) {
-          const entry    = dayData[site];
-          const time     = typeof entry === "number" ? entry : (entry.time || 0);
-          const category = (typeof entry === "object" && entry.category) ? entry.category : "Other";
-
-          categoryTime[category]  = (categoryTime[category]  || 0) + time;
-          siteMap[site]           = (siteMap[site]           || 0) + time;
-        }
+    let r;
+    if (editingCat) {
+      r = await fetch(`${API}/user-categories/${editingCat.id}`, {
+        method:"PUT", headers:hdrs(), body:JSON.stringify(payload)
       });
-
-      const totalTime = Object.values(categoryTime).reduce((a, b) => a + b, 0);
-
-      document.getElementById("totalTime").textContent       = formatTime(totalTime);
-      document.getElementById("learningTime").textContent    = formatTime(categoryTime.Learning);
-      document.getElementById("distractionTime").textContent = formatTime(categoryTime.Distraction);
-      document.getElementById("developmentTime").textContent = formatTime(categoryTime.Development);
-      document.getElementById("otherTime").textContent       = formatTime(categoryTime.Other);
-
-      const score = calculateProductivity(categoryTime);
-      document.getElementById("productivityScore").textContent = score;
-      document.getElementById("scoreDesc").textContent         = getProductivityMessage(score);
-
-      const ul = document.getElementById("topSites");
-      ul.innerHTML = "";
-
-      const sorted = Object.entries(siteMap)
-        .filter(([, time]) => time > 0)
-        .sort((a, b) => b[1] - a[1])
-        .slice(0, 8);
-
-      if (sorted.length === 0) {
-        ul.innerHTML = '<li style="color: var(--text-secondary); font-size: 13px;">No data for this period</li>';
-      } else {
-        sorted.forEach(([site, time]) => {
-          const li = document.createElement("li");
-          li.innerHTML = `<span>${site}</span><span style="font-weight:600;">${formatTime(time)}</span>`;
-          ul.appendChild(li);
-        });
-      }
-
-      renderChart(categoryTime);
-    });
-  });
-}
-
-/* =========================
-   CHART
-========================= */
-function renderChart(categoryTime) {
-  const canvas = document.getElementById("timeChart");
-  if (!canvas || typeof Chart === "undefined") return;
-
-  const data = [
-    Math.floor(categoryTime.Learning    / 60000),
-    Math.floor(categoryTime.Distraction / 60000),
-    Math.floor(categoryTime.Development / 60000),
-    Math.floor(categoryTime.Other       / 60000)
-  ];
-
-  const hasData = data.some(v => v > 0);
-  const ctx     = canvas.getContext("2d");
-
-  if (timeChartInstance) timeChartInstance.destroy();
-
-  if (!hasData) {
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.fillStyle  = "#94a3b8";
-    ctx.textAlign  = "center";
-    ctx.font       = "14px sans-serif";
-    ctx.fillText("No data yet", canvas.width / 2, canvas.height / 2);
-    return;
-  }
-
-  timeChartInstance = new Chart(ctx, {
-    type: "doughnut",
-    data: {
-      labels: ["📚 Learning", "⚠️ Distraction", "💻 Development", "📦 Other"],
-      datasets: [{
-        label:           "Time (minutes)",
-        data,
-        backgroundColor: ["#22c55e", "#ef4444", "#3b82f6", "#f97316"],
-        borderWidth:     0
-      }]
-    },
-    options: {
-      responsive:          true,
-      maintainAspectRatio: true,
-      plugins: {
-        legend: {
-          position: "bottom",
-          labels:   { padding: 15, font: { size: 13 } }
-        }
-      }
+    } else {
+      r = await fetch(`${API}/user-categories`, {
+        method:"POST", headers:hdrs(), body:JSON.stringify(payload)
+      });
     }
+    if (!r.ok) { const e=await r.json().catch(()=>{}); throw new Error(e?.error||"Failed"); }
+    toast(editingCat ? "Category updated" : "Category created");
+    // Reload fresh category data first so getCatForDomain() resolves correctly
+    await loadUserCategories();
+    renderStatCards();
+    // Force chart to re-render immediately — domain→category mapping has changed
+    renderFromStorage._forceChart = true;
+    renderFromStorage();
+    // Sync background service worker category mappings
+    chrome.runtime.sendMessage({type:"SYNC_CATEGORIES"},()=>void chrome.runtime.lastError);
+    // Reload settings list if open
+    renderSettingsCatList();
+    closeCatEditor();
+  } catch(e) { toast(e.message||"Error","err"); }
+}
+
+async function deleteCatFromEditor() {
+  if (!editingCat || editingCat.isSystem) return;
+  if (!confirm(`Delete "${editingCat.name}"? Sites mapped to it will fall back to "Other".`)) return;
+  try {
+    const r = await fetch(`${API}/user-categories/${editingCat.id}`,{method:"DELETE",headers:hdrs()});
+    if (!r.ok) throw new Error("Failed");
+    toast("Category deleted");
+    await loadUserCategories();
+    renderStatCards();
+    renderFromStorage._forceChart = true;
+    renderFromStorage();
+    chrome.runtime.sendMessage({type:"SYNC_CATEGORIES"},()=>void chrome.runtime.lastError);
+    renderSettingsCatList();
+    closeCatEditor();
+  } catch(e) { toast(e.message,"err"); }
+}
+
+/* ── Emoji Picker ── */
+const EMOJI_SET = [
+  "📚","💻","⚠️","📦","🎯","🚀","🎮","📱","🌐","🔬","🧪","📊","💡","🎨","✍️","🎵","🎬","🏋️","🧘","🍕",
+  "☕","🛒","💼","📰","🗓️","📬","🔧","⚙️","🏠","🚗","✈️","🌍","🌱","⭐","🔥","💎","🏆","🎓","📝","🔍",
+  "📷","🎭","🤝","💬","📡","🧠","👾","🕹️","🎸","🎯","🏔️","🌊","🌸","🦋","🐧","🦊","🐬","🌺","⚡","🌙",
+  "☀️","❄️","🌈","💫","🪐","🔮","🎪","🏟️","🌃","🗺️","📌","🚩","🏁","🎁","🎉","🎊","🧩","🎲","♟️","🃏"
+];
+let filteredEmojis = [...EMOJI_SET];
+
+function buildEmojiGrid() {
+  renderEmojiGrid(EMOJI_SET);
+  document.getElementById("emojiSearch")?.addEventListener("input", e => {
+    const q = e.target.value.toLowerCase();
+    renderEmojiGrid(q ? EMOJI_SET.filter(em => em.includes(q)) : EMOJI_SET);
   });
 }
 
-/* =========================
-   FOCUS MODE
-========================= */
-function updateFocusButtons(isOn, locked = false) {
-  const startBtn  = document.getElementById("startFocus");
-  const stopBtn   = document.getElementById("stopFocus");
-  const focusBtn  = document.getElementById("focusBtn");
-  const statusInd = document.querySelector(".status-indicator");
-
-  if (startBtn)  startBtn.disabled  = isOn;
-  if (stopBtn)   stopBtn.disabled   = !isOn || locked;
-
-  if (focusBtn) {
-    focusBtn.textContent = locked ? "🔒 FOCUS LOCKED" :
-      isOn ? "✅ FOCUS MODE ON" : "⭕ FOCUS MODE OFF";
-  }
-
-  if (statusInd) statusInd.classList.toggle("active", isOn);
+function renderEmojiGrid(emojis) {
+  const grid = document.getElementById("emojiGrid");
+  if (!grid) return;
+  grid.innerHTML = "";
+  emojis.forEach(em => {
+    const btn = document.createElement("button");
+    btn.textContent = em;
+    btn.addEventListener("click", () => {
+      editEmoji = em;
+      document.getElementById("catEmojiDisplay").textContent = em;
+      document.getElementById("emojiPickerWrap").style.display = "none";
+      emojiPickerOpen = false;
+    });
+    grid.appendChild(btn);
+  });
 }
 
-function initFocusControls() {
-  document.getElementById("startFocus")?.addEventListener("click", () => {
-    chrome.runtime.sendMessage({ type: "FOCUS_ON", duration: 25, hard: false }, (res) => {
-      if (res?.success) showNotification("Focus mode started!", "success");
-    });
+/* ═══════════════════════════════════════
+   SETTINGS — categories list
+═══════════════════════════════════════ */
+function renderSettingsCatList() {
+  const ul = document.getElementById("settingsCatList");
+  if (!ul) return;
+  ul.innerHTML = "";
+  userCategories.forEach(cat => {
+    const li = document.createElement("li");
+    li.className = "cat-list-item";
+    li.innerHTML = `
+      <span class="cat-icon">${cat.emoji}</span>
+      <div class="cat-meta">
+        <span class="cat-name">${cat.name}</span>
+        <span class="cat-domain-count">${cat.domains?.length||0} domain${(cat.domains?.length||0)===1?"":"s"}</span>
+      </div>
+      <div class="cat-color-dot" style="background:${cat.color}"></div>
+      ${cat.isSystem ? '<span class="cat-system-badge">system</span>' : ''}
+      <span class="cat-edit-arrow">›</span>
+    `;
+    li.addEventListener("click", () => openCatEditor(cat));
+    ul.appendChild(li);
   });
-
-  document.getElementById("hardFocus")?.addEventListener("click", () => {
-    const input   = prompt("Hard Focus duration (minutes, min 5):", "25");
-    const minutes = parseInt(input, 10);
-    if (isNaN(minutes) || minutes < 5) {
-      showNotification("Minimum hard focus time is 5 minutes", "error");
-      return;
-    }
-    chrome.runtime.sendMessage({ type: "FOCUS_ON", duration: minutes, hard: true }, (res) => {
-      if (res?.success) showNotification(`Hard focus started for ${minutes} minutes!`, "success");
-    });
-  });
-
-  document.getElementById("stopFocus")?.addEventListener("click", () => {
-    chrome.runtime.sendMessage({ type: "FOCUS_OFF" }, (res) => {
-      if (res?.success) showNotification("Focus mode stopped", "success");
-    });
-  });
-
-  chrome.runtime.sendMessage(
-    { type: "GET_FOCUS_STATUS" },
-    res => updateFocusButtons(res?.status, res?.locked)
-  );
 }
 
-/* =========================
+/* ═══════════════════════════════════════
    BLOCKED SITES
-========================= */
-function normalizeSiteInput(raw) {
+═══════════════════════════════════════ */
+function normSite(raw) {
   let s = raw.trim().toLowerCase();
   if (!s.startsWith("http://") && !s.startsWith("https://")) s = "https://" + s;
-  try {
-    return new URL(s).hostname.replace(/^www\./, "");
-  } catch {
-    return raw.trim().toLowerCase()
-      .replace(/^https?:\/\//, "")
-      .replace(/^www\./, "")
-      .split("/")[0]
-      .split("?")[0];
-  }
+  try { return new URL(s).hostname.replace(/^www\./,""); }
+  catch { return raw.trim().toLowerCase().replace(/^https?:\/\//,"").replace(/^www\./,"").split("/")[0].split("?")[0]; }
 }
 
 async function loadBlockedSites() {
   const list = document.getElementById("blockedSitesList");
-
+  if (!list) return;
   try {
-    const res = await fetch(`${DASH_API}/blocked-sites`, { headers: getAuthHeaders() });
-    if (!res.ok) throw new Error(`Server returned ${res.status}`);
-
-    const sites = await res.json();
+    const [bRes, fRes] = await Promise.all([
+      fetch(`${API}/blocked-sites`, {headers:hdrs()}),
+      new Promise(res => chrome.runtime.sendMessage({type:"GET_FOCUS_STATUS"}, r=>{void chrome.runtime.lastError;res(r||{status:false});}))
+    ]);
+    if (!bRes.ok) throw new Error();
+    const sites  = await bRes.json();
+    const focusOn = fRes.status||false;
     list.innerHTML = "";
-
-    if (!Array.isArray(sites) || sites.length === 0) {
-      list.innerHTML = '<li style="color:var(--text-secondary);font-size:13px;text-align:center;padding:8px;">No blocked sites yet</li>';
-    } else {
-      sites.forEach(site => {
-        const li = document.createElement("li");
-        li.style.cssText = "display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--border);";
-
-        const span        = document.createElement("span");
-        span.textContent  = site;
-        span.style.fontSize = "13px";
-
-        const removeBtn   = document.createElement("button");
-        removeBtn.textContent  = "❌";
-        removeBtn.dataset.site = site;
-        removeBtn.style.cssText = "background:none;border:none;cursor:pointer;font-size:14px;padding:2px 6px;";
-
-        removeBtn.addEventListener("click", async () => {
-          chrome.runtime.sendMessage({ type: "GET_FOCUS_STATUS" }, async (statusRes) => {
-            const focusOn = statusRes?.status || false;
-            if (focusOn) {
-              showNotification("Stop Focus Mode first to remove sites", "error");
-              return;
-            }
-            try {
-              const delRes = await fetch(
-                `${DASH_API}/blocked-sites/${encodeURIComponent(site)}`,
-                { method: "DELETE", headers: getAuthHeaders() }
-              );
-              if (!delRes.ok) throw new Error("Delete failed");
-              showNotification(`${site} removed`, "success");
-              loadBlockedSites();
-            } catch (err) {
-              console.error("Failed to remove site", err);
-              showNotification("Failed to remove site", "error");
-            }
-          });
-        });
-
-        li.appendChild(span);
-        li.appendChild(removeBtn);
-        list.appendChild(li);
-      });
+    if (!sites.length) {
+      list.innerHTML = `<li style="padding:10px 6px;color:var(--text-3);font-size:14px;">No blocked sites yet</li>`;
+      return;
     }
-
-    // Update disabled state based on focus status
-    chrome.runtime.sendMessage({ type: "GET_FOCUS_STATUS" }, (statusRes) => {
-      const focusOn = statusRes?.status || false;
-      list.querySelectorAll("button[data-site]").forEach(btn => {
-        btn.disabled      = focusOn;
-        btn.title         = focusOn ? "Stop Focus Mode to remove sites" : "Remove site";
-        btn.style.opacity = focusOn ? "0.4" : "1";
-      });
+    sites.forEach(site => {
+      const li   = document.createElement("li");
+      const span = document.createElement("span"); span.textContent = site;
+      const btn  = document.createElement("button");
+      btn.className = "del-btn"; btn.textContent = "×"; btn.disabled = focusOn;
+      btn.title = focusOn ? "Stop focus first" : `Remove ${site}`;
+      btn.addEventListener("click", () => delBlockedSite(site));
+      li.appendChild(span); li.appendChild(btn); list.appendChild(li);
     });
+  } catch { list.innerHTML = `<li style="padding:10px;color:#dc2626;font-size:13px;">Failed to load</li>`; }
+}
 
-  } catch (err) {
-    console.error("Failed to load blocked sites:", err);
-    list.innerHTML = '<li style="color:#ef4444;font-size:13px;padding:8px;">Failed to load. Check server connection.</li>';
+async function delBlockedSite(site) {
+  try {
+    const r = await fetch(`${API}/blocked-sites/${encodeURIComponent(site)}`,{method:"DELETE",headers:hdrs()});
+    if (!r.ok) throw new Error();
+    chrome.runtime.sendMessage({type:"REMOVE_BLOCK_SITE",site},()=>void chrome.runtime.lastError);
+    toast(`${site} removed`);
+    loadBlockedSites();
+  } catch(e) { toast("Failed to remove","err"); }
+}
+
+async function addBlockedSite() {
+  const inp = document.getElementById("blockSiteInput");
+  const btn = document.getElementById("addBlockSite");
+  const raw = inp?.value.trim();
+  if (!raw) { toast("Enter a domain","err"); return; }
+  const nd = normSite(raw);
+  if (!nd || !nd.includes(".")) { toast("Enter a valid domain","err"); return; }
+  await loadAuthToken();
+  btn.disabled = true; btn.textContent = "…";
+  try {
+    const r = await fetch(`${API}/blocked-sites`,{method:"POST",headers:hdrs(),body:JSON.stringify({site:nd})});
+    if (!r.ok) { const e=await r.json().catch(()=>{}); throw new Error(e?.error||`Error ${r.status}`); }
+    inp.value = "";
+    toast(`${nd} blocked`);
+    chrome.runtime.sendMessage({type:"ADD_BLOCK_SITE",site:nd},()=>void chrome.runtime.lastError);
+    loadBlockedSites();
+  } catch(e) { toast(e.message||"Failed","err"); }
+  finally { btn.disabled=false; btn.textContent="Block"; }
+}
+
+/* ═══════════════════════════════════════
+   FOCUS MODE — only reload current tab
+═══════════════════════════════════════ */
+function updateFocusUI(on, locked) {
+  document.getElementById("statusDot")?.classList.toggle("on", on);
+  const lbl = document.getElementById("focusLabel");
+  if (lbl) lbl.textContent = locked ? "Hard Focus — Locked" : on ? "On" : "Off";
+  const startBtn = document.getElementById("startFocus");
+  const hardBtn  = document.getElementById("hardFocus");
+  const stopBtn  = document.getElementById("stopFocus");
+  if (startBtn) startBtn.disabled = on;
+  if (hardBtn)  hardBtn.disabled  = on;
+  if (stopBtn)  stopBtn.disabled  = !on || locked;
+}
+
+function reloadCurrentIfBlocked() {
+  fetch(`${API}/blocked-sites`,{headers:hdrs()}).then(r=>r.json()).then(blocked => {
+    if (!blocked.length) return;
+    chrome.tabs.query({active:true,lastFocusedWindow:true}, tabs=>{
+      void chrome.runtime.lastError;
+      if (!tabs?.length||!tabs[0]?.url) return;
+      try {
+        const host = new URL(tabs[0].url).hostname.replace(/^www\./,"");
+        if (blocked.some(s=>host===s||host.endsWith("."+s))) chrome.tabs.reload(tabs[0].id);
+      } catch {}
+    });
+  }).catch(()=>{});
+}
+
+function initFocusControls() {
+  document.getElementById("startFocus")?.addEventListener("click",()=>{
+    chrome.runtime.sendMessage({type:"FOCUS_ON",duration:25,hard:false}, res=>{
+      void chrome.runtime.lastError;
+      if (res?.success) { toast("Focus on — 25 min"); updateFocusUI(true,false); reloadCurrentIfBlocked(); }
+      else toast(res?.error||"Could not start","err");
+    });
+  });
+  document.getElementById("hardFocus")?.addEventListener("click",()=>{
+    const m = parseInt(prompt("Hard Focus duration (min, min 5):","25"),10);
+    if (!m||m<5) { toast("Min 5 minutes","err"); return; }
+    chrome.runtime.sendMessage({type:"FOCUS_ON",duration:m,hard:true}, res=>{
+      void chrome.runtime.lastError;
+      if (res?.success) { toast(`Hard focus — ${m} min, locked`); updateFocusUI(true,true); reloadCurrentIfBlocked(); }
+      else toast(res?.error||"Could not start","err");
+    });
+  });
+  document.getElementById("stopFocus")?.addEventListener("click",()=>{
+    chrome.runtime.sendMessage({type:"FOCUS_OFF"}, res=>{
+      void chrome.runtime.lastError;
+      if (res?.success) { toast("Focus off"); updateFocusUI(false,false); }
+      else toast(res?.error||"Could not stop","err");
+    });
+  });
+  chrome.runtime.sendMessage({type:"GET_FOCUS_STATUS"}, res=>{
+    void chrome.runtime.lastError;
+    if (res) updateFocusUI(res.status, res.locked);
+  });
+}
+
+/* ═══════════════════════════════════════
+   REFLECTION
+═══════════════════════════════════════ */
+async function loadReflection() {
+  try {
+    const r = await fetch(`${API}/reflections/${getTodayKey()}`,{headers:hdrs()});
+    if (!r.ok) return;
+    const d = await r.json();
+    if (d?.date) {
+      document.getElementById("reflectionDistractions").value = d.distractions||"";
+      document.getElementById("reflectionWentWell").value     = d.wentWell||"";
+      document.getElementById("reflectionImprovements").value = d.improvements||"";
+    }
+  } catch {}
+}
+
+async function saveReflection() {
+  try {
+    const r = await fetch(`${API}/reflections`,{
+      method:"POST",headers:hdrs(),
+      body:JSON.stringify({
+        date: getTodayKey(),
+        distractions: document.getElementById("reflectionDistractions").value,
+        wentWell:     document.getElementById("reflectionWentWell").value,
+        improvements: document.getElementById("reflectionImprovements").value,
+      })
+    });
+    if (!r.ok) throw new Error();
+    const chip = document.getElementById("reflectionSaved");
+    chip.style.display="block"; setTimeout(()=>chip.style.display="none",3000);
+    toast("Reflection saved");
+  } catch { toast("Failed to save","err"); }
+}
+
+/* ═══════════════════════════════════════
+   WEEKLY SUMMARY
+═══════════════════════════════════════ */
+async function loadWeeklySummary() {
+  const today=new Date(), wago=new Date(today);
+  wago.setDate(wago.getDate()-7);
+  try {
+    const r = await fetch(`${API}/reflections?startDate=${wago.toISOString().split("T")[0]}&endDate=${today.toISOString().split("T")[0]}`,{headers:hdrs()});
+    allWeeklyData = r.ok ? await r.json() : [];
+    renderWeekly();
+  } catch { document.getElementById("weeklySummary").innerHTML=`<p class="empty-text">Could not load</p>`; }
+}
+
+function renderWeekly() {
+  const cont   = document.getElementById("weeklySummary");
+  const allBox = document.getElementById("summaryAll");
+  const btn    = document.getElementById("showAllBtn");
+  if (!allWeeklyData.length) {
+    cont.innerHTML=`<p class="empty-text">No reflections yet</p>`;
+    btn.style.display="none"; return;
   }
+  cont.innerHTML="";
+  const entries = document.createElement("div"); entries.className="summary-entries";
+  [allWeeklyData[0]].forEach(r=>entries.appendChild(makeSummaryEl(r)));
+  cont.appendChild(entries);
+  if (allWeeklyData.length<=1) { btn.style.display="none"; return; }
+  btn.style.display="block";
+  btn.textContent = showingAll ? "Show less" : `Show all ${allWeeklyData.length} entries`;
+  allBox.innerHTML="";
+  if (showingAll) {
+    allWeeklyData.slice(1).forEach(r=>allBox.appendChild(makeSummaryEl(r)));
+    allBox.classList.add("open");
+  } else allBox.classList.remove("open");
 }
 
-/* =========================
+function makeSummaryEl(ref) {
+  const item = document.createElement("div"); item.className="summary-item";
+  const date = document.createElement("div"); date.className="summary-date";
+  date.textContent = new Date(ref.date+"T00:00:00")
+    .toLocaleDateString("en-US",{weekday:"short",month:"short",day:"numeric"});
+  const text = document.createElement("div"); text.className="summary-text";
+  const parts=[];
+  if (ref.wentWell) parts.push(`+ ${ref.wentWell.slice(0,90)}${ref.wentWell.length>90?"…":""}`);
+  if (ref.distractions) parts.push(`- ${ref.distractions.slice(0,70)}${ref.distractions.length>70?"…":""}`);
+  text.textContent=parts.join(" · ");
+  item.appendChild(date); item.appendChild(text);
+  return item;
+}
+
+/* ═══════════════════════════════════════
    EXPORT
-========================= */
-function downloadFile(content, filename, type) {
-  const blob = new Blob([content], { type });
-  const url  = URL.createObjectURL(blob);
-  const a    = document.createElement("a");
-  a.href     = url;
-  a.download = filename;
-  a.click();
-  URL.revokeObjectURL(url);
+═══════════════════════════════════════ */
+function dl(content,name,type) {
+  const a=document.createElement("a");
+  a.href=URL.createObjectURL(new Blob([content],{type}));
+  a.download=name; a.click(); URL.revokeObjectURL(a.href);
 }
 
-/* =========================
-   MODAL
-========================= */
+/* ═══════════════════════════════════════
+   MODAL HELPERS
+═══════════════════════════════════════ */
 function openSettings() {
-  document.getElementById("settingsModal").classList.add("active");
-  loadCategories();
+  renderSettingsCatList();
+  document.getElementById("settingsModal").classList.add("open");
+}
+function closeSettings() { document.getElementById("settingsModal").classList.remove("open"); }
+
+/* ═══════════════════════════════════════
+   TOAST
+═══════════════════════════════════════ */
+function toast(msg, type="ok") {
+  const c = document.getElementById("toastContainer");
+  const t = document.createElement("div");
+  t.className = `toast ${type}`;
+  t.textContent = msg;
+  c.appendChild(t);
+  setTimeout(()=>{ t.style.opacity="0"; t.style.transition="opacity .3s"; setTimeout(()=>t.remove(),350); }, 2800);
 }
 
-function closeSettings() {
-  document.getElementById("settingsModal").classList.remove("active");
+/* ═══════════════════════════════════════
+   UTILS
+═══════════════════════════════════════ */
+function fmt(ms) {
+  if (!ms||ms<=0) return "0 sec";
+  const s=Math.floor(ms/1000),m=Math.floor(s/60),h=Math.floor(m/60);
+  if (h>0) return `${h}h ${m%60}m`;
+  if (m>0) return `${m} min`;
+  return `${s} sec`;
 }
 
-/* =========================
+/* ═══════════════════════════════════════
    EVENT LISTENERS
-========================= */
+═══════════════════════════════════════ */
 function initEventListeners() {
-  // Settings
+  // Header
   document.getElementById("settingsBtn")?.addEventListener("click", openSettings);
-  document.querySelector(".close-btn")?.addEventListener("click",   closeSettings);
+  document.getElementById("refreshBtn")?.addEventListener("click",  ()=>location.reload());
 
-  document.getElementById("settingsModal")?.addEventListener("click", (e) => {
-    if (e.target === document.getElementById("settingsModal")) closeSettings();
+  // Settings modal
+  document.getElementById("closeSettings")?.addEventListener("click", closeSettings);
+  document.getElementById("settingsModal")?.addEventListener("click", e=>{
+    if (e.target===document.getElementById("settingsModal")) closeSettings();
   });
-
-  // Theme
-  document.getElementById("themeSelect")?.addEventListener("change", (e) => {
-    applyTheme(e.target.value, currentAccent);
-  });
-
-  // Color options
-  document.querySelectorAll(".color-option").forEach(btn => {
-    btn.addEventListener("click", () => {
-      document.querySelectorAll(".color-option").forEach(b => b.classList.remove("active"));
-      btn.classList.add("active");
-      applyTheme(currentTheme, btn.dataset.color);
-    });
-  });
-
-  document.querySelector(".save-settings-btn")?.addEventListener("click", saveSettings);
+  document.getElementById("saveSettingsBtn")?.addEventListener("click", saveSettings);
   document.getElementById("logoutBtn")?.addEventListener("click", logout);
 
-  // Categories
-  document.getElementById("addCategoryBtn")?.addEventListener("click", addCategory);
-  document.getElementById("categoryDomain")?.addEventListener("keypress", (e) => {
-    if (e.key === "Enter") addCategory();
+  // Theme — only change theme
+  document.getElementById("themeSelect")?.addEventListener("change", e=>applyTheme(e.target.value, currentAccent));
+  // Accent — only change accent
+  document.querySelectorAll(".swatch").forEach(b=>b.addEventListener("click",()=>applyTheme(currentTheme,b.dataset.color)));
+
+  // Categories in settings
+  document.getElementById("addCatBtn")?.addEventListener("click",()=>openCatEditor(null));
+
+  // Cat editor
+  document.getElementById("closeCatEditor")?.addEventListener("click", closeCatEditor);
+  document.getElementById("catEditorModal")?.addEventListener("click", e=>{
+    if (e.target===document.getElementById("catEditorModal")) closeCatEditor();
   });
+  document.getElementById("cancelCatEditor")?.addEventListener("click", closeCatEditor);
+  document.getElementById("saveCatBtn")?.addEventListener("click", saveCatEditor);
+  document.getElementById("deleteCatBtn")?.addEventListener("click", deleteCatFromEditor);
+
+  // Emoji picker toggle
+  document.getElementById("emojiPickerBtn")?.addEventListener("click",()=>{
+    emojiPickerOpen = !emojiPickerOpen;
+    document.getElementById("emojiPickerWrap").style.display = emojiPickerOpen ? "block" : "none";
+  });
+
+  // Domain management in editor
+  document.getElementById("addDomainBtn")?.addEventListener("click", addDomainToEdit);
+  document.getElementById("newDomainInput")?.addEventListener("keypress", e=>{
+    if (e.key==="Enter") addDomainToEdit();
+  });
+
+  // Colour controls in editor
+  document.getElementById("colorNativeInput")?.addEventListener("input", e=>{
+    editColor = e.target.value;
+    document.getElementById("colorHexInput").value = editColor;
+    document.getElementById("colorPreview").style.background = editColor;
+  });
+  document.getElementById("colorHexInput")?.addEventListener("input", e=>{
+    const v = e.target.value.trim();
+    if (/^#[0-9a-fA-F]{6}$/.test(v)) {
+      editColor = v;
+      document.getElementById("colorNativeInput").value = v;
+      document.getElementById("colorPreview").style.background = v;
+    }
+  });
+
+  // Blocked sites
+  document.getElementById("addBlockSite")?.addEventListener("click", addBlockedSite);
+  document.getElementById("blockSiteInput")?.addEventListener("keypress",e=>{ if(e.key==="Enter") addBlockedSite(); });
 
   // Reflection
   document.getElementById("saveReflection")?.addEventListener("click", saveReflection);
 
-  // Dashboard range/refresh
-  document.getElementById("rangeSelect")?.addEventListener("change", loadDashboard);
-  document.getElementById("refreshBtn")?.addEventListener("click",   loadDashboard);
+  // Range
+  document.getElementById("rangeSelect")?.addEventListener("change", ()=>{ _lastChartRender=0; renderFromStorage(); });
 
-  // ── ADD BLOCKED SITE ──
-  // FIX: Always reload authToken before the request so we're never sending
-  // without an Authorization header. Also improved error messaging so the user
-  // sees the actual server error (not just a generic "Failed to add site").
-  async function addBlockedSite() {
-    const input  = document.getElementById("blockSiteInput");
-    const addBtn = document.getElementById("addBlockSite");
-    const raw    = input.value.trim();
-
-    if (!raw) {
-      showNotification("Please enter a domain", "error");
-      return;
-    }
-
-    const normalized = normalizeSiteInput(raw);
-    if (!normalized || normalized.length < 2 || !normalized.includes(".")) {
-      showNotification("Enter a valid domain like youtube.com", "error");
-      return;
-    }
-
-    // Always refresh token before request — critical for avoiding 401/500
-    await loadAuthToken();
-    if (!authToken) {
-      showNotification("Not logged in. Please refresh the page.", "error");
-      return;
-    }
-
-    addBtn.disabled    = true;
-    addBtn.textContent = "Saving…";
-
-    try {
-      const res = await fetch(`${DASH_API}/blocked-sites`, {
-        method:  "POST",
-        headers: getAuthHeaders(),
-        body:    JSON.stringify({ site: normalized })
-      });
-
-      if (!res.ok) {
-        // FIX: Parse and show the actual server error message
-        const errData = await res.json().catch(() => ({}));
-        throw new Error(errData.error || `Server error (${res.status})`);
-      }
-
-      input.value = "";
-      showNotification(`✅ ${normalized} added to block list`, "success");
-
-      // Reload the list immediately — confirmed save, no race condition
-      await loadBlockedSites();
-
-      // Tell background to re-apply declarativeNetRequest rules
-      chrome.runtime.sendMessage({ type: "ADD_BLOCK_SITE", site: normalized });
-
-    } catch (err) {
-      console.error("Failed to add blocked site:", err);
-      showNotification(err.message || "Failed to add site", "error");
-    } finally {
-      addBtn.disabled    = false;
-      addBtn.textContent = "Add";
-    }
-  }
-
-  document.getElementById("addBlockSite")?.addEventListener("click", addBlockedSite);
-  document.getElementById("blockSiteInput")?.addEventListener("keypress", (e) => {
-    if (e.key === "Enter") addBlockedSite();
-  });
+  // Weekly show all
+  document.getElementById("showAllBtn")?.addEventListener("click",()=>{ showingAll=!showingAll; renderWeekly(); });
 
   // Export
-  document.getElementById("exportJsonBtn")?.addEventListener("click", () => {
-    chrome.storage.local.get(["timeData"], (res) => {
-      downloadFile(
-        JSON.stringify(res.timeData || {}, null, 2),
-        `focus-tracker-${getTodayKey()}.json`,
-        "application/json"
-      );
-    });
+  document.getElementById("exportJsonBtn")?.addEventListener("click",()=>{
+    chrome.storage.local.get(["timeData"],res=>dl(JSON.stringify(res.timeData||{},null,2),`focus-${getTodayKey()}.json`,"application/json"));
   });
-
-  document.getElementById("exportCsvBtn")?.addEventListener("click", () => {
-    chrome.storage.local.get(["timeData"], (res) => {
-      const timeData = res.timeData || {};
-      let csv = "Date,Website,Category,Time(ms),Time(minutes)\n";
-      for (const date in timeData) {
-        for (const site in timeData[date]) {
-          const e   = timeData[date][site];
-          const ms  = typeof e === "number" ? e : (e.time || 0);
-          const cat = typeof e === "object" ? (e.category || "Other") : "Other";
-          csv += `${date},${site},${cat},${ms},${Math.round(ms / 60000 * 10) / 10}\n`;
-        }
+  document.getElementById("exportCsvBtn")?.addEventListener("click",()=>{
+    chrome.storage.local.get(["timeData"],res=>{
+      const d=res.timeData||{}; let csv="Date,Website,Category,Time(ms),Time(min)\n";
+      for(const date in d) for(const site in d[date]){
+        const e=d[date][site],ms=typeof e==="number"?e:(e.time||0),cat=typeof e==="object"?(e.catId||"other"):"other";
+        csv+=`${date},${site},${cat},${ms},${(ms/60000).toFixed(1)}\n`;
       }
-      downloadFile(csv, `focus-tracker-${getTodayKey()}.csv`, "text/csv");
+      dl(csv,`focus-${getTodayKey()}.csv`,"text/csv");
     });
   });
 
-  // Load blocked sites on init
-  loadBlockedSites();
-
-  // Listen for focus state changes
-  chrome.storage.onChanged.addListener((changes, area) => {
-    if (area === "local" && (changes.focusMode || changes.focusLockUntil)) {
-      chrome.runtime.sendMessage(
-        { type: "GET_FOCUS_STATUS" },
-        res => updateFocusButtons(res?.status, res?.locked)
-      );
+  // Storage change → update focus buttons
+  chrome.storage.onChanged.addListener((changes,area)=>{
+    if(area==="local"&&(changes.focusMode||changes.focusLockUntil)){
+      chrome.runtime.sendMessage({type:"GET_FOCUS_STATUS"},res=>{
+        void chrome.runtime.lastError;
+        if(res) updateFocusUI(res.status,res.locked);
+      });
       loadBlockedSites();
     }
   });

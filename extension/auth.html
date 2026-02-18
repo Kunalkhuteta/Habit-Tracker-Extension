@@ -26,14 +26,10 @@
       box-shadow: 0 25px 50px rgba(0,0,0,0.25);
     }
 
-    .logo {
-      text-align: center;
-      margin-bottom: 28px;
-    }
+    .logo { text-align: center; margin-bottom: 28px; }
     .logo h1 { font-size: 26px; color: #1e293b; font-weight: 700; }
     .logo p  { color: #64748b; font-size: 14px; margin-top: 4px; }
 
-    /* Tabs */
     .tabs {
       display: flex;
       background: #f1f5f9;
@@ -42,182 +38,99 @@
       margin-bottom: 24px;
     }
     .tab {
-      flex: 1;
-      padding: 9px;
-      border: none;
-      background: none;
-      border-radius: 8px;
-      font-size: 14px;
-      font-weight: 500;
-      color: #64748b;
-      cursor: pointer;
-      transition: all 0.2s;
+      flex: 1; padding: 9px; border: none; background: none;
+      border-radius: 8px; font-size: 14px; font-weight: 500;
+      color: #64748b; cursor: pointer; transition: all 0.2s;
     }
     .tab.active {
-      background: white;
-      color: #1e293b;
+      background: white; color: #1e293b;
       box-shadow: 0 2px 8px rgba(0,0,0,0.1);
     }
 
-    /* Form sections */
     .section { display: none; }
     .section.active { display: block; }
 
-    /* Google button */
     .btn-google {
-      width: 100%;
-      padding: 12px;
-      border: 2px solid #e2e8f0;
-      border-radius: 10px;
-      background: white;
-      font-size: 14px;
-      font-weight: 600;
-      color: #374151;
-      cursor: pointer;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      gap: 10px;
+      width: 100%; padding: 12px;
+      border: 2px solid #e2e8f0; border-radius: 10px;
+      background: white; font-size: 14px; font-weight: 600;
+      color: #374151; cursor: pointer;
+      display: flex; align-items: center; justify-content: center; gap: 10px;
       transition: border-color 0.2s, background 0.2s;
       margin-bottom: 20px;
     }
     .btn-google:hover { border-color: #3b82f6; background: #f8faff; }
-    .btn-google img { width: 20px; height: 20px; }
+    .btn-google img   { width: 20px; height: 20px; }
 
-    /* Divider */
     .divider {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      margin-bottom: 20px;
-      color: #94a3b8;
-      font-size: 13px;
+      display: flex; align-items: center; gap: 12px;
+      margin-bottom: 20px; color: #94a3b8; font-size: 13px;
     }
     .divider::before, .divider::after {
-      content: "";
-      flex: 1;
-      height: 1px;
-      background: #e2e8f0;
+      content: ""; flex: 1; height: 1px; background: #e2e8f0;
     }
 
-    /* Inputs */
     .field { margin-bottom: 16px; }
-    .field label {
-      display: block;
-      font-size: 13px;
-      font-weight: 600;
-      color: #374151;
-      margin-bottom: 6px;
-    }
+    .field label { display: block; font-size: 13px; font-weight: 600; color: #374151; margin-bottom: 6px; }
     .field input {
-      width: 100%;
-      padding: 12px 14px;
-      border: 2px solid #e2e8f0;
-      border-radius: 10px;
-      font-size: 14px;
-      color: #1e293b;
-      transition: border-color 0.2s;
-      outline: none;
+      width: 100%; padding: 12px 14px;
+      border: 2px solid #e2e8f0; border-radius: 10px;
+      font-size: 14px; color: #1e293b;
+      transition: border-color 0.2s; outline: none;
     }
     .field input:focus { border-color: #3b82f6; }
-    .field input.error { border-color: #ef4444; }
-    .field .hint { font-size: 12px; color: #94a3b8; margin-top: 4px; }
 
-    /* Primary button */
     .btn-primary {
-      width: 100%;
-      padding: 13px;
+      width: 100%; padding: 13px;
       background: linear-gradient(135deg, #667eea, #764ba2);
-      color: white;
-      border: none;
-      border-radius: 10px;
-      font-size: 15px;
-      font-weight: 600;
-      cursor: pointer;
-      transition: opacity 0.2s, transform 0.1s;
-      margin-top: 4px;
+      color: white; border: none; border-radius: 10px;
+      font-size: 15px; font-weight: 600; cursor: pointer;
+      transition: opacity 0.2s, transform 0.1s; margin-top: 4px;
     }
     .btn-primary:hover   { opacity: 0.9; }
     .btn-primary:active  { transform: scale(0.99); }
     .btn-primary:disabled{ opacity: 0.6; cursor: not-allowed; }
 
-    /* Link button */
     .btn-link {
-      background: none;
-      border: none;
-      color: #3b82f6;
-      font-size: 13px;
-      cursor: pointer;
-      padding: 0;
-      text-decoration: underline;
+      background: none; border: none; color: #3b82f6;
+      font-size: 13px; cursor: pointer; padding: 0; text-decoration: underline;
     }
     .btn-link:hover { color: #2563eb; }
 
-    /* Password strength */
-    .strength-bar {
-      height: 4px;
-      border-radius: 2px;
-      background: #e2e8f0;
-      margin-top: 6px;
-      overflow: hidden;
-    }
-    .strength-fill {
-      height: 100%;
-      border-radius: 2px;
-      transition: width 0.3s, background 0.3s;
-      width: 0%;
-    }
+    .strength-bar { height: 4px; border-radius: 2px; background: #e2e8f0; margin-top: 6px; overflow: hidden; }
+    .strength-fill { height: 100%; border-radius: 2px; transition: width 0.3s, background 0.3s; width: 0%; }
     .strength-text { font-size: 11px; margin-top: 3px; }
 
-    /* Messages */
     .msg {
-      padding: 12px 14px;
-      border-radius: 10px;
-      font-size: 13px;
-      margin-bottom: 16px;
-      display: none;
+      padding: 12px 14px; border-radius: 10px; font-size: 13px;
+      margin-bottom: 16px; display: none;
     }
     .msg.error   { background: #fef2f2; color: #dc2626; border: 1px solid #fecaca; }
     .msg.success { background: #f0fdf4; color: #16a34a; border: 1px solid #bbf7d0; }
     .msg.info    { background: #eff6ff; color: #2563eb; border: 1px solid #bfdbfe; }
     .msg.show    { display: block; }
 
-    /* Loading spinner */
     .spinner {
-      display: inline-block;
-      width: 16px; height: 16px;
-      border: 2px solid rgba(255,255,255,0.4);
-      border-top-color: white;
-      border-radius: 50%;
-      animation: spin 0.7s linear infinite;
-      vertical-align: middle;
-      margin-right: 6px;
+      display: inline-block; width: 16px; height: 16px;
+      border: 2px solid rgba(255,255,255,0.4); border-top-color: white;
+      border-radius: 50%; animation: spin 0.7s linear infinite;
+      vertical-align: middle; margin-right: 6px;
     }
     @keyframes spin { to { transform: rotate(360deg); } }
 
-    /* Forgot password section */
     .forgot-section { display: none; }
     .forgot-section.active { display: block; }
 
     .back-link {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      color: #64748b;
-      font-size: 13px;
-      cursor: pointer;
-      margin-bottom: 20px;
-      background: none;
-      border: none;
+      display: flex; align-items: center; gap: 6px;
+      color: #64748b; font-size: 13px; cursor: pointer;
+      margin-bottom: 20px; background: none; border: none;
     }
     .back-link:hover { color: #3b82f6; }
 
-    /* OTP input */
     .otp-input {
-      font-size: 24px !important;
-      text-align: center;
-      letter-spacing: 10px;
-      font-weight: 700;
+      font-size: 24px !important; text-align: center;
+      letter-spacing: 10px; font-weight: 700;
     }
   </style>
 </head>
@@ -228,18 +141,16 @@
     <p>Track your time. Stay focused. Get things done.</p>
   </div>
 
-  <!-- MESSAGE BOX -->
   <div id="msgBox" class="msg"></div>
 
-  <!-- MAIN AUTH (login / signup) -->
+  <!-- MAIN AUTH -->
   <div id="mainSection">
-    <!-- TABS -->
     <div class="tabs">
-      <button class="tab active" id="tabLogin"  onclick="switchTab('login')">Sign In</button>
-      <button class="tab"        id="tabSignup" onclick="switchTab('signup')">Create Account</button>
+      <!-- NO onclick= here — wired in auth.js to avoid CSP violation -->
+      <button class="tab active" id="tabLogin">Sign In</button>
+      <button class="tab"        id="tabSignup">Create Account</button>
     </div>
 
-    <!-- GOOGLE SIGN-IN -->
     <button class="btn-google" id="googleBtn">
       <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" alt="Google" />
       Continue with Google
@@ -247,7 +158,7 @@
 
     <div class="divider">or</div>
 
-    <!-- LOGIN FORM -->
+    <!-- LOGIN -->
     <div class="section active" id="loginSection">
       <div class="field">
         <label>Email</label>
@@ -259,11 +170,12 @@
       </div>
       <button class="btn-primary" id="loginBtn">Sign In</button>
       <div style="text-align:center;margin-top:14px;">
-        <button class="btn-link" onclick="showForgot()">Forgot password?</button>
+        <!-- NO onclick= — wired in auth.js -->
+        <button class="btn-link" id="forgotLink">Forgot password?</button>
       </div>
     </div>
 
-    <!-- SIGNUP FORM -->
+    <!-- SIGNUP -->
     <div class="section" id="signupSection">
       <div class="field">
         <label>Your Name</label>
@@ -285,9 +197,9 @@
 
   <!-- FORGOT PASSWORD -->
   <div id="forgotSection" class="forgot-section">
-    <button class="back-link" onclick="showMain()">← Back to Sign In</button>
+    <!-- NO onclick= — wired in auth.js -->
+    <button class="back-link" id="backToLoginBtn">← Back to Sign In</button>
 
-    <!-- Step 1: Enter email -->
     <div id="forgotStep1">
       <h3 style="margin-bottom:6px;color:#1e293b;">Reset Password</h3>
       <p style="color:#64748b;font-size:13px;margin-bottom:20px;">
@@ -300,7 +212,6 @@
       <button class="btn-primary" id="sendOtpBtn">Send Reset Code</button>
     </div>
 
-    <!-- Step 2: Enter OTP + new password -->
     <div id="forgotStep2" style="display:none;">
       <h3 style="margin-bottom:6px;color:#1e293b;">Enter Reset Code</h3>
       <p style="color:#64748b;font-size:13px;margin-bottom:20px;">

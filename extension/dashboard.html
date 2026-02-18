@@ -1,303 +1,257 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <title>Focus Tracker Dashboard</title>
-  <link rel="stylesheet" href="dashboard.css" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta charset="UTF-8"/>
+  <title>Focus Tracker</title>
+  <link rel="stylesheet" href="dashboard.css"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
 </head>
-
 <body>
-  <!-- HEADER -->
-  <header class="dashboard-header">
-    <div class="header-left">
-      <h1>⏱️ Focus Tracker</h1>
-      <p class="subtitle">Track your productivity &amp; stay focused</p>
-    </div>
-    <div class="header-right">
-      <button id="settingsBtn" class="icon-btn" title="Settings">⚙️</button>
-      <button id="refreshBtn" class="icon-btn" title="Refresh">🔄</button>
-    </div>
-  </header>
 
-  <!-- SETTINGS MODAL -->
-  <div id="settingsModal" class="modal">
-    <div class="modal-content">
-      <div class="modal-header">
-        <h2>⚙️ Settings</h2>
-        <button class="close-btn">✕</button>
-      </div>
+<!-- TOAST CONTAINER -->
+<div class="toast-container" id="toastContainer"></div>
 
-      <div class="settings-section">
-        <h3>🎨 Appearance</h3>
-
-        <div class="setting-item">
-          <label>Theme</label>
-          <select id="themeSelect">
-            <option value="light">☀️ Light</option>
-            <option value="dark">🌙 Dark</option>
-          </select>
-        </div>
-
-        <div class="setting-item">
-          <label>Accent Color</label>
-          <div class="color-picker">
-            <button class="color-option" data-color="blue">💙</button>
-            <button class="color-option" data-color="green">💚</button>
-            <button class="color-option" data-color="purple">💜</button>
-            <button class="color-option" data-color="red">❤️</button>
-            <button class="color-option" data-color="orange">🧡</button>
-          </div>
-        </div>
-      </div>
-
-      <div class="settings-section">
-        <h3>📁 Category Management</h3>
-        <p class="help-text">
-          Override how websites are categorized. Enter the domain only
-          (e.g. <code>youtube.com</code>) — no https:// needed.
-        </p>
-
-        <div class="category-manager">
-          <input type="text" id="categoryDomain" placeholder="e.g. youtube.com" />
-          <select id="categorySelect">
-            <option value="Learning">📚 Learning</option>
-            <option value="Development">💻 Development</option>
-            <option value="Distraction">⚠️ Distraction</option>
-            <option value="Other">📦 Other</option>
-          </select>
-          <button id="addCategoryBtn">Add</button>
-        </div>
-
-        <ul id="categoryList" class="category-list"></ul>
-      </div>
-
-      <button class="save-settings-btn">
-        💾 Save Settings
-      </button>
-
-      <!-- LOGOUT BUTTON -->
-      <div class="settings-section" style="margin-top: 12px; border-top: 1px solid var(--border); padding-top: 16px;">
-        <h3>🔐 Account</h3>
-        <button
-          id="logoutBtn"
-          style="
-            width: 100%;
-            padding: 12px;
-            background: #ef4444;
-            color: white;
-            border: none;
-            border-radius: 10px;
-            font-size: 14px;
-            font-weight: 600;
-            cursor: pointer;
-            transition: background 0.2s;
-          "
-          onmouseover="this.style.background='#dc2626'"
-          onmouseout="this.style.background='#ef4444'"
-        >
-          🚪 Log Out
-        </button>
-        <p style="font-size: 11px; color: var(--text-secondary); text-align: center; margin-top: 6px;">
-          Your data stays saved. You can log back in with your token.
-        </p>
-      </div>
-    </div>
+<!-- ══════════════════ HEADER ══════════════════ -->
+<header class="dashboard-header">
+  <div class="header-left">
+    <h1>Focus <em>Tracker</em></h1>
+    <p class="subtitle">Understand where your time really goes</p>
   </div>
+  <div class="header-right">
+    <button id="settingsBtn" class="icon-btn" title="Settings">&#9881;</button>
+    <button id="refreshBtn"  class="icon-btn" title="Reload">&#8635;</button>
+  </div>
+</header>
 
-  <!-- MAIN GRID -->
-  <div class="dashboard-grid">
+<!-- ══════════════════ SETTINGS MODAL ══════════════════ -->
+<div id="settingsModal" class="modal">
+  <div class="modal-box">
+    <div class="modal-hd">
+      <h2>Settings</h2>
+      <button class="close-btn" id="closeSettings">&#x2715;</button>
+    </div>
 
-    <!-- LEFT COLUMN -->
-    <div class="left-column">
-
-      <!-- FOCUS MODE CARD -->
-      <div class="card focus-card">
-        <h2>🎯 Focus Mode</h2>
-
-        <div class="focus-status" id="focusStatus">
-          <div class="status-indicator"></div>
-          <span id="focusBtn">⭕ FOCUS MODE OFF</span>
-        </div>
-
-        <div class="focus-controls">
-          <button id="startFocus" class="btn-primary">
-            ▶️ Start Focus (25m)
-          </button>
-          <button id="hardFocus" class="btn-danger">
-            🔒 Hard Focus
-          </button>
-          <button id="stopFocus" class="btn-secondary">
-            ⏸️ Stop Focus
-          </button>
-        </div>
-
-        <div id="focusTimer" class="focus-timer" style="display:none;">
-          <span id="timerDisplay">25:00</span>
-        </div>
-      </div>
-
-      <!-- TIME RANGE SELECTOR -->
-      <div class="card">
-        <label for="rangeSelect"><strong>📅 Time Range</strong></label>
-        <select id="rangeSelect">
-          <option value="today">Today</option>
-          <option value="yesterday">Yesterday</option>
-          <option value="7days">Last 7 Days</option>
-          <option value="30days">Last 30 Days</option>
+    <!-- Appearance -->
+    <div class="setting-section">
+      <div class="section-label">Appearance</div>
+      <div class="setting-row">
+        <label>Theme</label>
+        <select id="themeSelect">
+          <option value="light">Light</option>
+          <option value="dark">Dark</option>
         </select>
       </div>
-
-      <!-- PRODUCTIVITY SCORE -->
-      <div class="card score-card">
-        <h2>📊 Productivity Score</h2>
-        <div class="score-display">
-          <div class="score-circle">
-            <span id="productivityScore">0</span>
-            <small>/100</small>
-          </div>
+      <div class="setting-row">
+        <label>Accent</label>
+        <div class="swatches">
+          <button class="swatch swatch-indigo" data-color="indigo" title="Indigo" aria-label="Indigo"></button>
+          <button class="swatch swatch-blue"   data-color="blue"   title="Blue"   aria-label="Blue"></button>
+          <button class="swatch swatch-green"  data-color="green"  title="Green"  aria-label="Green"></button>
+          <button class="swatch swatch-purple" data-color="purple" title="Purple" aria-label="Purple"></button>
+          <button class="swatch swatch-red"    data-color="red"    title="Red"    aria-label="Red"></button>
+          <button class="swatch swatch-orange" data-color="orange" title="Orange" aria-label="Orange"></button>
         </div>
-        <p class="score-desc" id="scoreDesc">Keep going!</p>
       </div>
-
-      <!-- BLOCKED SITES -->
-      <div class="card">
-        <h2>🚫 Blocked Sites</h2>
-        <div class="block-site-input">
-          <input type="text" id="blockSiteInput" placeholder="example.com" />
-          <button id="addBlockSite">Add</button>
-        </div>
-        <ul id="blockedSitesList" class="blocked-list"></ul>
+      <div style="display:flex;justify-content:flex-end;margin-top:16px;">
+        <button id="saveSettingsBtn" class="btn-primary">Save appearance</button>
       </div>
     </div>
 
-    <!-- MIDDLE COLUMN -->
-    <div class="middle-column">
-
-      <!-- SUMMARY STATS -->
-      <div class="stats-grid">
-        <div class="stat-card">
-          <div class="stat-icon">⏱️</div>
-          <div class="stat-info">
-            <span class="stat-value" id="totalTime">0</span>
-            <span class="stat-label">Total Time</span>
-          </div>
-        </div>
-
-        <div class="stat-card learning">
-          <div class="stat-icon">📚</div>
-          <div class="stat-info">
-            <span class="stat-value" id="learningTime">0</span>
-            <span class="stat-label">Learning</span>
-          </div>
-        </div>
-
-        <div class="stat-card distraction">
-          <div class="stat-icon">⚠️</div>
-          <div class="stat-info">
-            <span class="stat-value" id="distractionTime">0</span>
-            <span class="stat-label">Distraction</span>
-          </div>
-        </div>
-
-        <div class="stat-card development">
-          <div class="stat-icon">💻</div>
-          <div class="stat-info">
-            <span class="stat-value" id="developmentTime">0</span>
-            <span class="stat-label">Development</span>
-          </div>
-        </div>
-
-        <div class="stat-card other">
-          <div class="stat-icon">📦</div>
-          <div class="stat-info">
-            <span class="stat-value" id="otherTime">0</span>
-            <span class="stat-label">Other</span>
-          </div>
-        </div>
-      </div>
-
-      <!-- CHART -->
-      <div class="card chart-card">
-        <h2>📈 Category Breakdown</h2>
-        <div id="chartContainer">
-          <canvas id="timeChart"></canvas>
-        </div>
-      </div>
-
-      <!-- TOP SITES -->
-      <div class="card">
-        <h2>🏆 Top Sites</h2>
-        <ul id="topSites" class="top-sites-list"></ul>
-      </div>
+    <!-- Categories -->
+    <div class="setting-section">
+      <div class="section-label">Categories</div>
+      <p style="font-size:13px;color:var(--text-3);margin-bottom:14px;line-height:1.5;">
+        Click any category to edit its name, emoji, colour, and which sites belong to it.
+        Changes apply instantly across your whole dashboard.
+      </p>
+      <ul class="cat-list" id="settingsCatList"></ul>
+      <button class="add-cat-btn" id="addCatBtn">+ Add new category</button>
     </div>
 
-    <!-- RIGHT COLUMN -->
-    <div class="right-column">
-
-      <!-- DAILY REFLECTION -->
-      <div class="card reflection-card">
-        <h2>🧘 Daily Reflection</h2>
-        <p class="help-text">Reflect on your day to improve tomorrow</p>
-
-        <div class="reflection-form">
-          <div class="form-group">
-            <label>What distracted you the most?</label>
-            <textarea id="reflectionDistractions"
-                      placeholder="E.g., Social media, YouTube videos..."
-                      rows="2"></textarea>
-          </div>
-
-          <div class="form-group">
-            <label>What went well today?</label>
-            <textarea id="reflectionWentWell"
-                      placeholder="E.g., Completed project, learned new skill..."
-                      rows="2"></textarea>
-          </div>
-
-          <div class="form-group">
-            <label>What can you improve?</label>
-            <textarea id="reflectionImprovements"
-                      placeholder="E.g., Start work earlier, take breaks..."
-                      rows="2"></textarea>
-          </div>
-
-          <button id="saveReflection" class="btn-primary full-width">
-            💾 Save Reflection
-          </button>
-        </div>
-
-        <div id="reflectionSaved" class="success-message" style="display:none;">
-          ✅ Reflection saved!
-        </div>
-      </div>
-
-      <!-- WEEKLY SUMMARY -->
-      <div class="card">
-        <h2>📅 Weekly Summary</h2>
-        <div id="weeklySummary" class="weekly-summary">
-          <p class="loading-text">Loading...</p>
-        </div>
-      </div>
-
-      <!-- EXPORT -->
-      <div class="card">
-        <h2>📥 Export Data</h2>
-        <div class="export-buttons">
-          <button id="exportJsonBtn" class="btn-export">
-            📄 Export JSON
-          </button>
-          <button id="exportCsvBtn" class="btn-export">
-            📊 Export CSV
-          </button>
-        </div>
-      </div>
+    <!-- Account -->
+    <div class="setting-section">
+      <div class="section-label">Account</div>
+      <button class="btn-danger-ghost" id="logoutBtn">Sign out</button>
     </div>
   </div>
+</div>
 
-  <!-- SCRIPTS -->
-  <script src="chart.min.js"></script>
-  <script src="config.js"></script>
-  <script src="dashboard.js"></script>
+<!-- ══════════════════ CATEGORY EDITOR MODAL ══════════════════ -->
+<div id="catEditorModal" class="modal">
+  <div class="modal-box" style="max-width:500px;">
+    <div class="modal-hd">
+      <h2 id="catEditorTitle">Edit Category</h2>
+      <button class="close-btn" id="closeCatEditor">&#x2715;</button>
+    </div>
+
+    <!-- Emoji + Name row -->
+    <div class="cat-editor-grid">
+      <button class="cat-emoji-btn" id="emojiPickerBtn" title="Change emoji">
+        <span id="catEmojiDisplay">📁</span>
+      </button>
+      <div class="cat-editor-fields">
+        <input type="text" id="catNameInput" placeholder="Category name" maxlength="32"/>
+        <div class="color-row">
+          <div class="color-preview" id="colorPreview"></div>
+          <input type="text" class="color-hex-input" id="colorHexInput" placeholder="#6366f1" maxlength="7"/>
+          <label class="color-native-btn" title="Open colour picker">
+            <input type="color" id="colorNativeInput"/>
+          </label>
+        </div>
+      </div>
+    </div>
+
+    <!-- Emoji picker (hidden until btn clicked) -->
+    <div class="emoji-picker-wrap" id="emojiPickerWrap" style="display:none;">
+      <input type="text" class="emoji-search" id="emojiSearch" placeholder="Search emoji..."/>
+      <div class="emoji-grid" id="emojiGrid"></div>
+    </div>
+
+    <!-- Domain mappings -->
+    <div style="margin-top:18px;">
+      <div class="section-label" style="margin-bottom:8px;">Mapped Domains</div>
+      <div class="domain-tags" id="domainTags"></div>
+      <div class="add-domain-row">
+        <input type="text" id="newDomainInput" placeholder="e.g. notion.so"/>
+        <button id="addDomainBtn">Add</button>
+      </div>
+    </div>
+
+    <!-- Footer -->
+    <div class="modal-footer">
+      <button class="btn-ghost modal-footer-del" id="deleteCatBtn" style="color:#dc2626;border-color:rgba(220,38,38,.3);">Delete</button>
+      <button class="btn-ghost" id="cancelCatEditor">Cancel</button>
+      <button class="btn-primary" id="saveCatBtn">Save changes</button>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════ MAIN GRID ══════════════════ -->
+<div class="dashboard-grid">
+
+  <!-- LEFT -->
+  <div class="left-column">
+
+    <div class="card focus-card">
+      <div class="card-title">Focus Mode</div>
+      <div class="focus-status">
+        <div class="status-dot" id="statusDot"></div>
+        <span id="focusLabel">Off</span>
+      </div>
+      <div class="focus-btns">
+        <button id="startFocus">&#9654; Start — 25 min</button>
+        <button id="hardFocus">&#128274; Hard Focus (custom)</button>
+        <button id="stopFocus">&#9646; Stop</button>
+      </div>
+    </div>
+
+    <div class="card range-card">
+      <div class="card-title">Time Range</div>
+      <select id="rangeSelect">
+        <option value="today">Today</option>
+        <option value="yesterday">Yesterday</option>
+        <option value="7days">Last 7 days</option>
+        <option value="30days">Last 30 days</option>
+      </select>
+    </div>
+
+    <div class="card score-card">
+      <div class="card-title">Productivity Score</div>
+      <div class="score-body">
+        <div class="score-ring">
+          <div class="score-num" id="productivityScore">—</div>
+          <div class="score-denom">/100</div>
+        </div>
+        <div class="score-detail">
+          <div class="score-label" id="scoreMood">Start browsing</div>
+          <div class="score-sub"  id="scoreDesc">to see your score</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Blocked Sites</div>
+      <div class="block-input-row">
+        <input type="text" id="blockSiteInput" placeholder="youtube.com"/>
+        <button class="btn-primary" id="addBlockSite" style="padding:10px 16px;font-size:14px;">Block</button>
+      </div>
+      <ul class="blocked-list" id="blockedSitesList"></ul>
+    </div>
+
+  </div><!-- /left -->
+
+  <!-- MIDDLE -->
+  <div class="middle-column">
+
+    <!-- Dynamic stats cards — rendered by JS from user categories -->
+    <div class="stats-grid" id="statsGrid">
+      <div class="stat-card total">
+        <span class="stat-emoji">&#128336;</span>
+        <div class="stat-info">
+          <span class="stat-value" id="totalTime">—</span>
+          <span class="stat-label">Total</span>
+        </div>
+      </div>
+      <!-- category stat cards injected by JS -->
+    </div>
+
+    <div class="card chart-card">
+      <div class="card-title">Breakdown</div>
+      <div id="chartContainer"><canvas id="timeChart"></canvas></div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Top Sites</div>
+      <ul class="top-sites-list" id="topSites"></ul>
+    </div>
+
+  </div><!-- /middle -->
+
+  <!-- RIGHT -->
+  <div class="right-column">
+
+    <div class="card">
+      <div class="card-title">Daily Reflection</div>
+      <p style="font-size:13px;color:var(--text-3);margin-bottom:14px;">A few minutes of reflection compounds over weeks.</p>
+      <div class="refl-fields">
+        <div class="form-group">
+          <label>What distracted you?</label>
+          <textarea id="reflectionDistractions" rows="2" placeholder="Social media, YouTube..."></textarea>
+        </div>
+        <div class="form-group">
+          <label>What went well?</label>
+          <textarea id="reflectionWentWell" rows="2" placeholder="Deep work session, shipped a feature..."></textarea>
+        </div>
+        <div class="form-group">
+          <label>What can improve?</label>
+          <textarea id="reflectionImprovements" rows="2" placeholder="Start earlier, fewer distractions..."></textarea>
+        </div>
+        <button class="btn-primary full" id="saveReflection">Save reflection</button>
+      </div>
+      <div id="reflectionSaved" class="success-chip" style="display:none;">Reflection saved!</div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Weekly Journal</div>
+      <div id="weeklySummary"><p class="empty-text">Loading...</p></div>
+      <div id="summaryAll" class="summary-all"></div>
+      <button class="show-all-btn" id="showAllBtn" style="display:none;">Show all entries</button>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Export Data</div>
+      <div class="export-row">
+        <button class="btn-export" id="exportJsonBtn">JSON</button>
+        <button class="btn-export" id="exportCsvBtn">CSV</button>
+      </div>
+    </div>
+
+  </div><!-- /right -->
+
+</div><!-- /grid -->
+
+<script src="chart.min.js"></script>
+<script src="config.js"></script>
+<script src="dashboard.js"></script>
 </body>
 </html>

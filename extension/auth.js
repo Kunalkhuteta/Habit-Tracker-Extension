@@ -1,14 +1,13 @@
 /* =========================================================
    auth.js — Sign-in, sign-up, Google OAuth, forgot password
-   
-   KEY FIXES:
-   1. fetch() now has a 15s timeout — Render free tier cold
-      starts take 30-60s, previously the button just froze
-      with no feedback. Now shows "Server is waking up..."
-   2. Google auth routed through background.js via sendMessage
-      because chrome.identity only works in service worker
-   3. All errors shown visibly — no more silent failures
+
+   CSP FIX: All event handlers wired here in JS, zero onclick=
+   in HTML. Chrome extensions block inline handlers via CSP.
 ========================================================= */
+
+const AUTH_API = (typeof API_BASE !== "undefined" && API_BASE)
+  ? API_BASE
+  : "https://habit-tracker-extension.onrender.com";
 
 /* =========================
    UI HELPERS
@@ -60,75 +59,61 @@ function showMain() {
 /* =========================
    PASSWORD STRENGTH
 ========================= */
-document.getElementById("signupPassword")?.addEventListener("input", (e) => {
-  const val  = e.target.value;
-  const fill = document.getElementById("strengthFill");
-  const text = document.getElementById("strengthText");
-  if (!fill || !text) return;
+function initPasswordStrength() {
+  document.getElementById("signupPassword")?.addEventListener("input", (e) => {
+    const val  = e.target.value;
+    const fill = document.getElementById("strengthFill");
+    const text = document.getElementById("strengthText");
+    if (!fill || !text) return;
 
-  let score = 0;
-  if (val.length >= 8)          score++;
-  if (/[A-Z]/.test(val))        score++;
-  if (/[0-9]/.test(val))        score++;
-  if (/[^A-Za-z0-9]/.test(val)) score++;
+    let score = 0;
+    if (val.length >= 8)          score++;
+    if (/[A-Z]/.test(val))        score++;
+    if (/[0-9]/.test(val))        score++;
+    if (/[^A-Za-z0-9]/.test(val)) score++;
 
-  const levels = [
-    { w: "0%",   bg: "#e2e8f0", label: "" },
-    { w: "25%",  bg: "#ef4444", label: "Weak" },
-    { w: "50%",  bg: "#f97316", label: "Fair" },
-    { w: "75%",  bg: "#eab308", label: "Good" },
-    { w: "100%", bg: "#22c55e", label: "Strong" }
-  ];
-  const lvl = levels[score] || levels[0];
-  fill.style.width      = lvl.w;
-  fill.style.background = lvl.bg;
-  text.textContent      = lvl.label;
-  text.style.color      = lvl.bg;
-});
+    const levels = [
+      { w: "0%",   bg: "#e2e8f0", label: "" },
+      { w: "25%",  bg: "#ef4444", label: "Weak" },
+      { w: "50%",  bg: "#f97316", label: "Fair" },
+      { w: "75%",  bg: "#eab308", label: "Good" },
+      { w: "100%", bg: "#22c55e", label: "Strong" }
+    ];
+    const lvl = levels[score] || levels[0];
+    fill.style.width      = lvl.w;
+    fill.style.background = lvl.bg;
+    text.textContent      = lvl.label;
+    text.style.color      = lvl.bg;
+  });
+}
 
 /* =========================
    FETCH WITH TIMEOUT
-   
-   Render free tier sleeps after 15 min — first request
-   takes 30-60s to wake up. Without a timeout the button
-   just freezes indefinitely with no feedback.
-   We show a helpful "waking up" message after 5s.
 ========================= */
-async function apiFetch(path, options = {}, timeoutMs = 20000) {
-  const controller = new AbortController();
-  const timeoutId  = setTimeout(() => controller.abort(), timeoutMs);
-
-  // Show "waking up" hint after 5 seconds of waiting
-  let wakeHintTimer = setTimeout(() => {
-    const box = document.getElementById("msgBox");
-    if (box && !box.classList.contains("show")) {
-      showMsg("⏳ Server is waking up (Render free tier)... please wait up to 30s", "info");
+async function apiFetch(path, options = {}, timeoutMs = 30000) {
+  const controller    = new AbortController();
+  const timeoutId     = setTimeout(() => controller.abort(), timeoutMs);
+  const wakeHintTimer = setTimeout(() => {
+    if (!document.getElementById("msgBox")?.classList.contains("show")) {
+      showMsg("⏳ Server waking up (free tier cold start)… please wait up to 30s", "info");
     }
-  }, 5000);
+  }, 6000);
 
   try {
-    const res = await fetch(`${API_BASE}${path}`, {
+    const res = await fetch(`${AUTH_API}${path}`, {
       ...options,
       signal: controller.signal,
-      headers: {
-        "Content-Type": "application/json",
-        ...(options.headers || {})
-      }
+      headers: { "Content-Type": "application/json", ...(options.headers || {}) }
     });
-
     clearTimeout(wakeHintTimer);
     clearTimeout(timeoutId);
-
     const data = await res.json().catch(() => ({}));
     return { ok: res.ok, status: res.status, data };
-
   } catch (err) {
     clearTimeout(wakeHintTimer);
     clearTimeout(timeoutId);
-
-    if (err.name === "AbortError") {
-      throw new Error("Request timed out. The server may be waking up — please try again in 30 seconds.");
-    }
+    if (err.name === "AbortError")
+      throw new Error("Server is still waking up — please try again in 15 seconds.");
     throw new Error("Cannot reach server. Check your internet connection.");
   }
 }
@@ -142,7 +127,12 @@ function storeSession(token, user) {
       authToken:     token,
       userInfo:      user,
       lastValidated: new Date().toISOString().split("T")[0]
-    }, resolve);
+    }, () => {
+      chrome.runtime.sendMessage({ type: "AUTH_TOKEN_UPDATED" }, () => {
+        void chrome.runtime.lastError;
+      });
+      resolve();
+    });
   });
 }
 
@@ -154,40 +144,35 @@ function goToDashboard() {
    AUTO-LOGIN CHECK
 ========================= */
 async function checkExistingSession() {
-  const data = await new Promise(resolve =>
-    chrome.storage.local.get(["authToken", "lastValidated"], resolve)
-  );
+  let data;
+  try {
+    data = await new Promise(resolve =>
+      chrome.storage.local.get(["authToken", "lastValidated"], resolve)
+    );
+  } catch { return; }
 
   if (!data.authToken) return;
 
   const today = new Date().toISOString().split("T")[0];
-  if (data.lastValidated === today) {
-    goToDashboard();
-    return;
-  }
+  if (data.lastValidated === today) { goToDashboard(); return; }
 
   try {
     const { ok } = await apiFetch("/auth/me", {
       headers: { Authorization: `Bearer ${data.authToken}` }
-    }, 10000);
-
+    }, 8000);
     if (ok) {
-      await new Promise(resolve =>
-        chrome.storage.local.set({ lastValidated: today }, resolve)
-      );
+      await new Promise(resolve => chrome.storage.local.set({ lastValidated: today }, resolve));
       goToDashboard();
     }
-  } catch {
-    // Server unreachable or token expired — show login page
-  }
+  } catch { /* server unreachable — show login */ }
 }
 
 /* =========================
    SIGN IN
 ========================= */
 async function handleLogin() {
-  const email    = document.getElementById("loginEmail").value.trim();
-  const password = document.getElementById("loginPassword").value;
+  const email    = (document.getElementById("loginEmail")?.value    || "").trim();
+  const password = (document.getElementById("loginPassword")?.value || "");
 
   if (!email || !password) { showMsg("Please enter your email and password"); return; }
 
@@ -197,12 +182,11 @@ async function handleLogin() {
   try {
     const { ok, data } = await apiFetch("/auth/login", {
       method: "POST",
-      body: JSON.stringify({ email, password })
+      body:   JSON.stringify({ email, password })
     });
 
     if (ok && data.token) {
       await storeSession(data.token, data.user);
-      chrome.runtime.sendMessage({ type: "AUTH_TOKEN_UPDATED" });
       showMsg("Welcome back! Redirecting…", "success");
       setTimeout(goToDashboard, 800);
     } else {
@@ -219,34 +203,36 @@ async function handleLogin() {
    SIGN UP
 ========================= */
 async function handleSignup() {
-  const name     = document.getElementById("signupName").value.trim();
-  const email    = document.getElementById("signupEmail").value.trim();
-  const password = document.getElementById("signupPassword").value;
+  const name     = (document.getElementById("signupName")?.value     || "").trim();
+  const email    = (document.getElementById("signupEmail")?.value    || "").trim();
+  const password = (document.getElementById("signupPassword")?.value || "");
 
-  if (!email)            { showMsg("Email is required"); return; }
-  if (!password)         { showMsg("Password is required"); return; }
-  if (password.length < 8) { showMsg("Password must be at least 8 characters"); return; }
+  if (!email)                { showMsg("Email is required"); return; }
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { showMsg("Please enter a valid email address"); return; }
+  if (!password)             { showMsg("Password is required"); return; }
+  if (password.length < 8)  { showMsg("Password must be at least 8 characters"); return; }
 
   setLoading("signupBtn", true, "Create Account");
   hideMsg();
 
   try {
-    const { ok, data } = await apiFetch("/auth/signup", {
+    const { ok, status, data } = await apiFetch("/auth/signup", {
       method: "POST",
-      body: JSON.stringify({ email, password, name })
+      body:   JSON.stringify({ email, password, name })
     });
 
     if (ok && data.token) {
       await storeSession(data.token, data.user);
-      chrome.runtime.sendMessage({ type: "AUTH_TOKEN_UPDATED" });
-
       if (!data.user?.isVerified) {
-        showMsg("Account created! Check your email to verify.", "info");
+        showMsg("✅ Account created! Check your email to verify, then redirecting…", "info");
         setTimeout(goToDashboard, 2500);
       } else {
-        showMsg("Account created!", "success");
+        showMsg("✅ Account created! Redirecting…", "success");
         setTimeout(goToDashboard, 800);
       }
+    } else if (status === 409) {
+      showMsg("An account with this email already exists. Try signing in instead.");
+      setTimeout(() => switchTab("login"), 2000);
     } else {
       showMsg(data.error || "Sign up failed — please try again");
     }
@@ -259,70 +245,57 @@ async function handleSignup() {
 
 /* =========================
    GOOGLE SIGN-IN
-   
-   Routed through background.js because chrome.identity
-   ONLY works in the service worker — not in extension pages.
 ========================= */
-async function handleGoogleSignIn() {
-  console.log("[AUTH.JS] Google button clicked");
-  hideMsg();
+const GOOGLE_BTN_HTML = `<img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" alt="Google" style="width:20px;height:20px;" /> Continue with Google`;
 
+async function handleGoogleSignIn() {
+  hideMsg();
   const btn = document.getElementById("googleBtn");
+  if (!btn) return;
+
   btn.disabled  = true;
   btn.innerHTML = `<span class="spinner" style="border-color:rgba(0,0,0,0.15);border-top-color:#374151;"></span> Signing in…`;
 
-  // Check chrome.runtime is available
   if (!chrome?.runtime?.sendMessage) {
     showMsg("Chrome extension API not available. Try reloading.");
-    btn.disabled = false;
-    btn.innerHTML = `<img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" style="width:18px;height:18px;" alt="Google" /> Continue with Google`;
-    return;
+    btn.disabled = false; btn.innerHTML = GOOGLE_BTN_HTML; return;
   }
 
-  console.log("[AUTH.JS] Sending GOOGLE_AUTH message to background...");
-
   const timeoutPromise = new Promise((_, reject) =>
-    setTimeout(() => reject(new Error("No response from background after 35s. Open chrome://extensions → service worker → Console to see the error.")), 35000)
+    setTimeout(() => reject(new Error("Google sign-in timed out. Try email/password instead.")), 35000)
   );
-
   const authPromise = new Promise((resolve) => {
     chrome.runtime.sendMessage({ type: "GOOGLE_AUTH" }, (response) => {
-      if (chrome.runtime.lastError) {
-        console.error("[AUTH.JS] sendMessage error:", chrome.runtime.lastError.message);
-        resolve({ success: false, error: "Background error: " + chrome.runtime.lastError.message });
-      } else {
-        console.log("[AUTH.JS] Got response from background:", response);
-        resolve(response || { success: false, error: "Background returned no response" });
-      }
+      if (chrome.runtime.lastError)
+        resolve({ success: false, error: chrome.runtime.lastError.message });
+      else
+        resolve(response || { success: false, error: "No response from background" });
     });
   });
 
   try {
     const response = await Promise.race([authPromise, timeoutPromise]);
-
     if (response.success && response.token) {
       await storeSession(response.token, response.user);
       showMsg("Welcome! Redirecting…", "success");
       setTimeout(goToDashboard, 800);
     } else {
-      showMsg(response.error || "Google sign-in failed. Please try again.");
+      showMsg(response.error || "Google sign-in failed. Please try email/password instead.");
     }
   } catch (err) {
-    console.error("[AUTH.JS] Google auth error:", err.message);
     showMsg(err.message);
   } finally {
-    btn.disabled  = false;
-    btn.innerHTML = `<img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" style="width:18px;height:18px;" alt="Google" /> Continue with Google`;
+    btn.disabled = false; btn.innerHTML = GOOGLE_BTN_HTML;
   }
 }
 
 /* =========================
    FORGOT PASSWORD
 ========================= */
-let forgotEmail = "";
+let forgotEmailCache = "";
 
 async function handleSendOtp() {
-  const email = document.getElementById("forgotEmail").value.trim();
+  const email = (document.getElementById("forgotEmail")?.value || "").trim();
   if (!email) { showMsg("Please enter your email"); return; }
 
   setLoading("sendOtpBtn", true, "Send Reset Code");
@@ -330,12 +303,10 @@ async function handleSendOtp() {
 
   try {
     const { ok, data } = await apiFetch("/auth/forgot-password", {
-      method: "POST",
-      body: JSON.stringify({ email })
+      method: "POST", body: JSON.stringify({ email })
     });
-
     if (ok) {
-      forgotEmail = email;
+      forgotEmailCache = email;
       showMsg("Reset code sent! Check your inbox.", "success");
       setTimeout(() => {
         hideMsg();
@@ -353,11 +324,11 @@ async function handleSendOtp() {
 }
 
 async function handleResetPassword() {
-  const otp         = document.getElementById("otpInput").value.trim();
-  const newPassword = document.getElementById("newPassword").value;
+  const otp         = (document.getElementById("otpInput")?.value  || "").trim();
+  const newPassword = (document.getElementById("newPassword")?.value || "");
 
   if (!otp || otp.length !== 6) { showMsg("Enter the 6-digit code from your email"); return; }
-  if (!newPassword || newPassword.length < 8) { showMsg("Password must be at least 8 characters"); return; }
+  if (!newPassword || newPassword.length < 8) { showMsg("New password must be at least 8 characters"); return; }
 
   setLoading("resetBtn", true, "Reset Password");
   hideMsg();
@@ -365,15 +336,14 @@ async function handleResetPassword() {
   try {
     const { ok, data } = await apiFetch("/auth/reset-password", {
       method: "POST",
-      body: JSON.stringify({ email: forgotEmail, otp, newPassword })
+      body:   JSON.stringify({ email: forgotEmailCache, otp, newPassword })
     });
-
     if (ok) {
-      showMsg("Password reset! You can now sign in.", "success");
+      showMsg("✅ Password reset! You can now sign in.", "success");
       setTimeout(() => {
-        showMain();
-        switchTab("login");
-        document.getElementById("loginEmail").value = forgotEmail;
+        showMain(); switchTab("login");
+        const el = document.getElementById("loginEmail");
+        if (el) el.value = forgotEmailCache;
       }, 1500);
     } else {
       showMsg(data.error || "Reset failed. Please try again.");
@@ -386,32 +356,51 @@ async function handleResetPassword() {
 }
 
 /* =========================
-   OTP: numbers only
-========================= */
-document.getElementById("otpInput")?.addEventListener("input", (e) => {
-  e.target.value = e.target.value.replace(/\D/g, "").slice(0, 6);
-});
-
-/* =========================
-   EVENT LISTENERS
+   BOOT — wire ALL handlers here, zero inline HTML
 ========================= */
 document.addEventListener("DOMContentLoaded", () => {
-  // Check if already logged in — skip auth if valid session exists
-  checkExistingSession().catch(console.error);
+  // Tab switching — replaces onclick="switchTab('login')" in HTML
+  document.getElementById("tabLogin")?.addEventListener("click",  () => switchTab("login"));
+  document.getElementById("tabSignup")?.addEventListener("click", () => switchTab("signup"));
 
-  document.getElementById("loginBtn")?.addEventListener("click", handleLogin);
-  document.getElementById("signupBtn")?.addEventListener("click", handleSignup);
-  document.getElementById("googleBtn")?.addEventListener("click", handleGoogleSignIn);
+  // Forgot password link — replaces onclick="showForgot()"
+  document.getElementById("forgotLink")?.addEventListener("click", showForgot);
+
+  // Back to login — replaces onclick="showMain()"
+  document.getElementById("backToLoginBtn")?.addEventListener("click", showMain);
+
+  // Main auth buttons
+  document.getElementById("loginBtn")?.addEventListener("click",   handleLogin);
+  document.getElementById("signupBtn")?.addEventListener("click",  handleSignup);
+  document.getElementById("googleBtn")?.addEventListener("click",  handleGoogleSignIn);
   document.getElementById("sendOtpBtn")?.addEventListener("click", handleSendOtp);
-  document.getElementById("resetBtn")?.addEventListener("click", handleResetPassword);
-  document.getElementById("resendBtn")?.addEventListener("click", handleSendOtp);
+  document.getElementById("resetBtn")?.addEventListener("click",   handleResetPassword);
+  document.getElementById("resendBtn")?.addEventListener("click",  handleSendOtp);
+
+  // OTP: numbers only
+  document.getElementById("otpInput")?.addEventListener("input", (e) => {
+    e.target.value = e.target.value.replace(/\D/g, "").slice(0, 6);
+  });
+
+  // Password strength meter
+  initPasswordStrength();
 
   // Enter key support
-  document.getElementById("loginEmail")?.addEventListener("keypress",     e => e.key === "Enter" && handleLogin());
-  document.getElementById("loginPassword")?.addEventListener("keypress",  e => e.key === "Enter" && handleLogin());
-  document.getElementById("signupName")?.addEventListener("keypress",     e => e.key === "Enter" && handleSignup());
-  document.getElementById("signupEmail")?.addEventListener("keypress",    e => e.key === "Enter" && handleSignup());
-  document.getElementById("signupPassword")?.addEventListener("keypress", e => e.key === "Enter" && handleSignup());
-  document.getElementById("forgotEmail")?.addEventListener("keypress",    e => e.key === "Enter" && handleSendOtp());
-  document.getElementById("newPassword")?.addEventListener("keypress",    e => e.key === "Enter" && handleResetPassword());
+  const enterMap = {
+    "loginEmail":     handleLogin,
+    "loginPassword":  handleLogin,
+    "signupName":     handleSignup,
+    "signupEmail":    handleSignup,
+    "signupPassword": handleSignup,
+    "forgotEmail":    handleSendOtp,
+    "newPassword":    handleResetPassword,
+  };
+  for (const [id, fn] of Object.entries(enterMap)) {
+    document.getElementById(id)?.addEventListener("keypress", (e) => {
+      if (e.key === "Enter") fn();
+    });
+  }
+
+  // Auto-login if valid session exists
+  checkExistingSession().catch(console.error);
 });
