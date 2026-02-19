@@ -1,20 +1,9 @@
 /* =========================================================
    KEEPALIVE — Must be the very first thing that runs.
-
-   MV3 service workers are killed by Chrome after 30 seconds
-   of inactivity. Two strategies run together:
-
-   1. chrome.alarms (every ~25s): Wakes the worker back up
-      even after Chrome has already killed it. This is the
-      ONLY official way to resurrect a dead service worker.
-
-   2. Storage heartbeat (every 20s): While the worker is
-      alive, writing to chrome.storage resets the 30s idle
-      timer so Chrome doesn't kill it in the first place.
 ========================================================= */
 const KEEPALIVE_ALARM = "focus-tracker-keepalive";
-const HEARTBEAT_MS    = 20_000;  // 20 seconds
-const ALARM_INTERVAL  = 0.4;     // minutes (~24 seconds)
+const HEARTBEAT_MS    = 20_000;
+const ALARM_INTERVAL  = 0.4;
 
 let _heartbeatTimer = null;
 
@@ -35,7 +24,6 @@ async function registerKeepaliveAlarm() {
   }
 }
 
-// When alarm fires (even after worker was killed), restart heartbeat
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === KEEPALIVE_ALARM) {
     startHeartbeat();
@@ -43,22 +31,16 @@ chrome.alarms.onAlarm.addListener((alarm) => {
   }
 });
 
-// Start both strategies immediately on worker boot
 startHeartbeat();
 registerKeepaliveAlarm();
 
 /* =========================================================
    GLOBAL STATE
-
-   IMPORTANT: Service workers can be killed and restarted at
-   any time. All in-memory variables reset to their defaults
-   on each restart. Critical state (focusMode, focusLockUntil,
-   authToken) is always read from chrome.storage, never trusted
-   from in-memory variables alone.
 ========================================================= */
 let currentDomain  = null;
-let isIdle         = false;
-let chromeFocused  = true;
+// FIX: Removed isIdle and chromeFocused entirely.
+// We track ALL time while any site is active in the browser.
+// No idle pause, no window focus requirement.
 let bufferTime     = {};
 
 let focusModeOn      = false;
@@ -69,11 +51,10 @@ let hardFocusActive  = false;
 const BASE_RULE_ID = 1000;
 const MAX_RULES    = 100;
 
-// Category mappings from server (rebuilt on every worker boot)
 let categoryMappings = {};
-
-// Authentication token (always reloaded from storage)
 let authToken = null;
+
+const BG_API_BASE = "https://habit-tracker-extension.onrender.com";
 
 /* =========================================================
    UTILS
@@ -83,12 +64,15 @@ function normalizeDomain(domain) {
     .toLowerCase()
     .replace(/^https?:\/\//, "")
     .replace(/^www\./, "")
-    .split("/")[0];
+    .split("/")[0]
+    .split("?")[0]
+    .split(":")[0];
 }
 
 function getDomain(url) {
   try {
-    return new URL(url).hostname.replace(/^www\./, "");
+    const hostname = new URL(url).hostname.replace(/^www\./, "");
+    return hostname || null;
   } catch {
     return null;
   }
@@ -100,55 +84,17 @@ function getTodayKey() {
 
 function getCategory(domain) {
   if (!domain) return "Other";
-
   const normalized = normalizeDomain(domain);
-
-  // Exact match from server mappings
   if (categoryMappings[normalized]) return categoryMappings[normalized];
-
-  // Parent domain match (e.g. music.youtube.com → youtube.com mapping)
   const parts = normalized.split(".");
   for (let i = 1; i < parts.length - 1; i++) {
     const parent = parts.slice(i).join(".");
     if (categoryMappings[parent]) return categoryMappings[parent];
   }
-
-  // Root key match
-  const root = parts[0];
-  if (categoryMappings[root]) return categoryMappings[root];
-
-  // Fallback hardcoded logic
-  if (
-    normalized.includes("leetcode") ||
-    normalized.includes("geeksforgeeks") ||
-    normalized.includes("coursera") ||
-    normalized.includes("udemy") ||
-    normalized.includes("khanacademy") ||
-    normalized.includes("edx") ||
-    normalized.includes("pluralsight")
-  ) return "Learning";
-
-  if (
-    normalized.includes("youtube") ||
-    normalized.includes("instagram") ||
-    normalized.includes("facebook") ||
-    normalized.includes("twitter") ||
-    normalized.includes("reddit") ||
-    normalized.includes("tiktok") ||
-    normalized.includes("netflix") ||
-    normalized.includes("twitch")
-  ) return "Distraction";
-
-  if (
-    normalized.includes("github") ||
-    normalized.includes("stackoverflow") ||
-    normalized.includes("dev.to") ||
-    normalized.includes("medium") ||
-    normalized.includes("docs.") ||
-    normalized.includes("mdn") ||
-    normalized.includes("npmjs")
-  ) return "Development";
-
+  if (categoryMappings[parts[0]]) return categoryMappings[parts[0]];
+  if (/leetcode|geeksforgeeks|coursera|udemy|khanacademy|edx|pluralsight/.test(normalized)) return "Learning";
+  if (/youtube|instagram|facebook|twitter|reddit|tiktok|netflix|twitch/.test(normalized)) return "Distraction";
+  if (/github|stackoverflow|dev\.to|medium|docs\.|mdn|npmjs/.test(normalized)) return "Development";
   return "Other";
 }
 
@@ -165,10 +111,7 @@ async function loadAuthToken() {
 }
 
 function getAuthHeaders() {
-  if (!authToken) {
-    console.warn("No auth token available");
-    return { "Content-Type": "application/json" };
-  }
+  if (!authToken) return { "Content-Type": "application/json" };
   return {
     "Content-Type": "application/json",
     "Authorization": `Bearer ${authToken}`
@@ -178,13 +121,14 @@ function getAuthHeaders() {
 /* =========================================================
    TIME TRACKING
 
-   FIX: Reduced flush interval from 10s → 3s so data is
-   written to storage much more frequently. The dashboard
-   forces a flush via GET_LIVE_TIME before reading, ensuring
-   it always sees up-to-date data.
+   FIX: trackOneSecond no longer checks isIdle or chromeFocused.
+   Time accumulates for currentDomain every second, period.
+   This means: open laptop, chrome open on claude.ai = time tracked.
 ========================================================= */
 function trackOneSecond() {
-  if (!currentDomain || isIdle || !chromeFocused) return;
+  if (!currentDomain) return;
+  // Skip internal browser pages
+  if (!currentDomain || currentDomain.length < 2) return;
   bufferTime[currentDomain] = (bufferTime[currentDomain] || 0) + 1000;
 }
 
@@ -193,7 +137,7 @@ async function flushBufferToStorage() {
 
   const today    = getTodayKey();
   const captured = { ...bufferTime };
-  bufferTime     = {}; // Clear immediately so we don't double-count
+  bufferTime     = {};
 
   const timeData = await new Promise((resolve) => {
     chrome.storage.local.get(["timeData"], (res) => resolve(res.timeData || {}));
@@ -203,97 +147,101 @@ async function flushBufferToStorage() {
 
   for (const domain in captured) {
     const category = getCategory(domain);
-
     if (!timeData[today][domain]) {
       timeData[today][domain] = { time: 0, category };
     }
-
     timeData[today][domain].time     += captured[domain];
-    timeData[today][domain].category  = getCategory(domain); // Always update
+    timeData[today][domain].category  = category;
   }
 
   chrome.storage.local.set({ timeData });
 }
 
 setInterval(trackOneSecond, 1000);
-setInterval(flushBufferToStorage, 3000); // FIX: was 10000, now 3000ms
+setInterval(flushBufferToStorage, 3000);
 
 /* =========================================================
    CATEGORY SYNC FROM SERVER
+   FIX: Uses /categories (correct endpoint matching server.js)
 ========================================================= */
 async function syncCategoriesFromServer() {
   const token = await loadAuthToken();
-  if (!token) {
-    console.warn("Cannot sync categories: No auth token");
-    return;
-  }
-
+  if (!token) return;
   try {
     const response = await fetch(`${BG_API_BASE}/categories`, {
       headers: getAuthHeaders()
     });
-
-    if (!response.ok) {
-      console.error("Failed to sync categories:", response.status);
-      return;
-    }
-
+    if (!response.ok) return;
     const mappings = await response.json();
-
-    // Rebuild completely so deleted entries are also removed
     categoryMappings = {};
     if (Array.isArray(mappings)) {
       mappings.forEach((m) => {
-        const normalized = normalizeDomain(m.domain);
-        categoryMappings[normalized] = m.category;
+        if (m.domain && m.category) {
+          categoryMappings[normalizeDomain(m.domain)] = m.category;
+        }
       });
     }
-
-    console.log("✅ Categories synced:", categoryMappings);
+    console.log("Categories synced:", Object.keys(categoryMappings).length);
   } catch (err) {
-    console.error("❌ Failed to sync categories:", err);
+    console.error("Failed to sync categories:", err);
   }
 }
 
-// Sync on startup and every 30 minutes
 loadAuthToken().then(() => {
   syncCategoriesFromServer();
   setInterval(syncCategoriesFromServer, 1800000);
 });
 
 /* =========================================================
-   TAB & IDLE EVENTS
+   TAB & WINDOW EVENTS
+
+   FIX: Window focus changes do NOT stop tracking.
+   We only update currentDomain, never pause counting.
 ========================================================= */
 chrome.tabs.onActivated.addListener((info) => {
   chrome.tabs.get(info.tabId, (tab) => {
-    if (tab && tab.url) currentDomain = getDomain(tab.url);
+    if (chrome.runtime.lastError) return;
+    if (tab && tab.url) {
+      const d = getDomain(tab.url);
+      if (d) currentDomain = d;
+    }
   });
 });
 
-chrome.tabs.onUpdated.addListener((_, changeInfo, tab) => {
-  if (changeInfo.url) {
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (changeInfo.status === "complete" || changeInfo.url) {
     chrome.tabs.query({ active: true, lastFocusedWindow: true }, (tabs) => {
-      if (tabs && tabs[0] && tabs[0].id === tab.id) {
-        currentDomain = getDomain(changeInfo.url);
+      if (chrome.runtime.lastError) return;
+      if (tabs && tabs[0] && tabs[0].id === tabId) {
+        const d = getDomain(tab.url || tabs[0].url);
+        if (d) currentDomain = d;
       }
     });
   }
 });
 
-chrome.windows.onFocusChanged.addListener((id) => {
-  chromeFocused = id !== chrome.windows.WINDOW_ID_NONE;
-  if (!chromeFocused) isIdle = true;
+chrome.windows.onFocusChanged.addListener((windowId) => {
+  // FIX: Only update currentDomain. Never pause tracking.
+  if (windowId === chrome.windows.WINDOW_ID_NONE) return;
+  chrome.tabs.query({ active: true, windowId }, (tabs) => {
+    if (chrome.runtime.lastError) return;
+    if (tabs && tabs[0] && tabs[0].url) {
+      const d = getDomain(tabs[0].url);
+      if (d) currentDomain = d;
+    }
+  });
 });
 
-chrome.idle.onStateChanged.addListener((state) => {
-  isIdle = state !== "active";
-  if (!chromeFocused) isIdle = true;
-});
+// FIX: chrome.idle.onStateChanged listener REMOVED.
+// We no longer pause on idle. Track everything.
 
-// Set initial active tab on startup
+// Set initial active tab
 chrome.tabs.query({ active: true, lastFocusedWindow: true }, (tabs) => {
-  if (!tabs || !tabs.length) return;
-  if (tabs[0]?.url) currentDomain = getDomain(tabs[0].url);
+  if (chrome.runtime.lastError) return;
+  if (tabs && tabs[0] && tabs[0].url) {
+    const d = getDomain(tabs[0].url);
+    if (d) currentDomain = d;
+  }
 });
 
 /* =========================================================
@@ -318,23 +266,13 @@ function notify(message) {
 ========================================================= */
 async function fetchBlockedSites() {
   const token = await loadAuthToken();
-  if (!token) {
-    console.warn("Cannot fetch blocked sites: No auth token");
-    return [];
-  }
-
+  if (!token) return [];
   try {
-    const res = await fetch(`${BG_API_BASE}/blocked-sites`, {
-      headers: getAuthHeaders()
-    });
-    if (!res.ok) {
-      console.error("Failed to fetch blocked sites:", res.status);
-      return [];
-    }
+    const res = await fetch(`${BG_API_BASE}/blocked-sites`, { headers: getAuthHeaders() });
+    if (!res.ok) return [];
     const sites = await res.json();
     return Array.isArray(sites) ? sites : [];
-  } catch (err) {
-    console.error("Failed to fetch blocked sites:", err);
+  } catch {
     return [];
   }
 }
@@ -348,44 +286,23 @@ async function applyBlockedSitesRulesIfFocusOn() {
   const focusData = await new Promise((resolve) => {
     chrome.storage.local.get(["focusMode"], resolve);
   });
-
-  if (!focusData.focusMode) {
-    removeAllBlockingRules();
-    return;
-  }
-
+  if (!focusData.focusMode) { removeAllBlockingRules(); return; }
   const blockedSites = await fetchBlockedSites();
-
   const rules = blockedSites.slice(0, MAX_RULES).map((site, i) => ({
     id: BASE_RULE_ID + i,
     priority: 1,
-    action: {
-      type: "redirect",
-      redirect: { extensionPath: "/blocked.html" }
-    },
-    condition: {
-      urlFilter: `||${site}^`,
-      resourceTypes: ["main_frame"]
-    }
+    action: { type: "redirect", redirect: { extensionPath: "/blocked.html" } },
+    condition: { urlFilter: `||${site}^`, resourceTypes: ["main_frame"] }
   }));
-
   const removeIds = Array.from({ length: MAX_RULES }, (_, i) => BASE_RULE_ID + i);
-
-  chrome.declarativeNetRequest.updateDynamicRules({
-    removeRuleIds: removeIds,
-    addRules: rules
-  });
+  chrome.declarativeNetRequest.updateDynamicRules({ removeRuleIds: removeIds, addRules: rules });
 }
 
 function isBlockedUrl(url, blockedSites) {
   try {
     const hostname = new URL(url).hostname.replace(/^www\./, "");
-    return blockedSites.some(
-      (site) => hostname === site || hostname.endsWith("." + site)
-    );
-  } catch {
-    return false;
-  }
+    return blockedSites.some(site => hostname === site || hostname.endsWith("." + site));
+  } catch { return false; }
 }
 
 /* =========================================================
@@ -394,19 +311,14 @@ function isBlockedUrl(url, blockedSites) {
 async function startFocus(durationMinutes = 25, hard = false) {
   const now        = Date.now();
   const durationMs = Math.max(5, durationMinutes) * 60 * 1000;
-
   clearTimeout(pomodoroTimer);
-
   focusModeOn     = true;
   hardFocusActive = hard;
   focusLockUntil  = hard ? now + durationMs : 0;
-
   await chrome.storage.local.set({ focusMode: true, focusLockUntil });
   await applyBlockedSitesRulesIfFocusOn();
-
   updateBadge();
   notify(`Focus Mode ON • ${durationMinutes} min`);
-
   chrome.tabs.query({ windowType: "normal" }, async (tabs) => {
     const blockedSites = await fetchBlockedSites();
     tabs.forEach((tab) => {
@@ -414,30 +326,18 @@ async function startFocus(durationMinutes = 25, hard = false) {
       if (isBlockedUrl(tab.url, blockedSites)) chrome.tabs.reload(tab.id);
     });
   });
-
-  if (hard) {
-    pomodoroTimer = setTimeout(() => stopFocus(true), durationMs);
-  }
+  if (hard) pomodoroTimer = setTimeout(() => stopFocus(true), durationMs);
 }
 
 function stopFocus(force = false) {
   const now = Date.now();
-
-  if (!force && hardFocusActive && now < focusLockUntil) {
-    notify("Hard focus active — cannot stop yet");
-    return;
-  }
-
+  if (!force && hardFocusActive && now < focusLockUntil) { notify("Hard focus active — cannot stop yet"); return; }
   clearTimeout(pomodoroTimer);
-
   focusModeOn     = false;
   hardFocusActive = false;
   focusLockUntil  = 0;
-
   removeAllBlockingRules();
-
   chrome.storage.local.set({ focusMode: false, focusLockUntil: 0 });
-
   updateBadge();
   notify("Focus Mode OFF");
 }
@@ -445,72 +345,40 @@ function stopFocus(force = false) {
 /* =========================================================
    MESSAGE HANDLER
 ========================================================= */
-
-// API base for background.js — MUST match config.js API_BASE exactly
-const BG_API_BASE = "https://habit-tracker-extension.onrender.com";
-
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   (async () => {
     const now = Date.now();
 
-    // ── GOOGLE AUTH ──
     if (msg.type === "GOOGLE_AUTH") {
-      console.log("[GOOGLE_AUTH] Step 1: Message received");
       try {
-        if (!chrome.identity) {
-          sendResponse({ success: false, error: "chrome.identity not available." });
-          return;
-        }
-        console.log("[GOOGLE_AUTH] Step 2: Calling getAuthToken...");
-
+        if (!chrome.identity) { sendResponse({ success: false, error: "chrome.identity not available." }); return; }
         const accessToken = await new Promise((resolve, reject) => {
           chrome.identity.getAuthToken({ interactive: true }, (token) => {
-            if (chrome.runtime.lastError) {
-              reject(new Error(chrome.runtime.lastError.message));
-            } else if (!token) {
-              reject(new Error("No token returned — check oauth2.client_id in manifest.json"));
-            } else {
-              console.log("[GOOGLE_AUTH] Step 3: Got access token ✓");
-              resolve(token);
-            }
+            if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
+            else if (!token) reject(new Error("No token returned"));
+            else resolve(token);
           });
         });
-
-        console.log("[GOOGLE_AUTH] Step 4: Sending token to server...");
         const res  = await fetch(`${BG_API_BASE}/auth/google`, {
-          method:  "POST",
-          headers: { "Content-Type": "application/json" },
-          body:    JSON.stringify({ accessToken })
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ accessToken })
         });
         const data = await res.json().catch(() => ({}));
-        console.log("[GOOGLE_AUTH] Step 5: Server response:", res.status, data);
-
         if (res.ok && data.token) {
-          await new Promise(resolve => chrome.storage.local.set({
-            authToken:     data.token,
-            userInfo:      data.user,
+          await new Promise(r => chrome.storage.local.set({
+            authToken: data.token, userInfo: data.user,
             lastValidated: new Date().toISOString().split("T")[0]
-          }, resolve));
+          }, r));
           await loadAuthToken();
           await syncCategoriesFromServer();
-          console.log("[GOOGLE_AUTH] ✅ Success");
           sendResponse({ success: true, token: data.token, user: data.user });
         } else {
-          console.error("[GOOGLE_AUTH] Server rejected:", data.error);
           sendResponse({ success: false, error: data.error || "Server rejected Google token" });
         }
-      } catch (err) {
-        console.error("[GOOGLE_AUTH] ❌", err.message);
-        sendResponse({ success: false, error: err.message });
-      }
+      } catch (err) { sendResponse({ success: false, error: err.message }); }
       return;
     }
 
-    // ── GET LIVE TIME ──
-    // FIX: Dashboard calls this first to force a flush before reading storage.
-    // This guarantees the dashboard always sees the latest buffered data, not
-    // data that's up to 10 seconds stale. Without this, you'd see "10 sec"
-    // when you've actually been browsing for 20 minutes.
     if (msg.type === "GET_LIVE_TIME") {
       await flushBufferToStorage();
       sendResponse({ success: true });
@@ -518,8 +386,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     }
 
     if (msg.type === "FOCUS_ON") {
-      const duration = (!msg.duration || msg.duration < 5) ? 25 : msg.duration;
-      await startFocus(duration, !!msg.hard);
+      await startFocus((!msg.duration || msg.duration < 5) ? 25 : msg.duration, !!msg.hard);
       sendResponse({ success: true });
       return;
     }
@@ -531,31 +398,18 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     }
 
     if (msg.type === "GET_FOCUS_STATUS") {
-      sendResponse({
-        status:    focusModeOn,
-        locked:    hardFocusActive && now < focusLockUntil,
-        remaining: Math.max(0, focusLockUntil - now)
-      });
+      sendResponse({ status: focusModeOn, locked: hardFocusActive && now < focusLockUntil, remaining: Math.max(0, focusLockUntil - now) });
       return;
     }
 
     if (msg.type === "ADD_BLOCK_SITE") {
       await loadAuthToken();
-      if (!authToken) {
-        sendResponse({ success: false, error: "Not authenticated" });
-        return;
-      }
+      if (!authToken) { sendResponse({ success: false, error: "Not authenticated" }); return; }
       try {
         const res = await fetch(`${BG_API_BASE}/blocked-sites`, {
-          method:  "POST",
-          headers: getAuthHeaders(),
-          body:    JSON.stringify({ site: msg.site })
+          method: "POST", headers: getAuthHeaders(), body: JSON.stringify({ site: msg.site })
         });
-        if (!res.ok) {
-          const err = await res.json().catch(() => ({}));
-          sendResponse({ success: false, error: err.error || "Server error" });
-          return;
-        }
+        if (!res.ok) { const e = await res.json().catch(() => ({})); sendResponse({ success: false, error: e.error || "Server error" }); return; }
         await applyBlockedSitesRulesIfFocusOn();
         const blockedSites = await fetchBlockedSites();
         chrome.tabs.query({ windowType: "normal" }, (tabs) => {
@@ -565,32 +419,19 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           });
         });
         sendResponse({ success: true });
-      } catch (err) {
-        sendResponse({ success: false, error: err.message });
-      }
+      } catch (err) { sendResponse({ success: false, error: err.message }); }
       return;
     }
 
     if (msg.type === "REMOVE_BLOCK_SITE") {
       await loadAuthToken();
-      if (!authToken) {
-        sendResponse({ success: false, error: "Not authenticated" });
-        return;
-      }
+      if (!authToken) { sendResponse({ success: false, error: "Not authenticated" }); return; }
       try {
-        const res = await fetch(
-          `${BG_API_BASE}/blocked-sites/${encodeURIComponent(msg.site)}`,
-          { method: "DELETE", headers: getAuthHeaders() }
-        );
-        if (!res.ok) {
-          sendResponse({ success: false, error: "Server error" });
-          return;
-        }
+        const res = await fetch(`${BG_API_BASE}/blocked-sites/${encodeURIComponent(msg.site)}`, { method: "DELETE", headers: getAuthHeaders() });
+        if (!res.ok) { sendResponse({ success: false, error: "Server error" }); return; }
         await applyBlockedSitesRulesIfFocusOn();
         sendResponse({ success: true });
-      } catch (err) {
-        sendResponse({ success: false, error: err.message });
-      }
+      } catch (err) { sendResponse({ success: false, error: err.message }); }
       return;
     }
 
@@ -608,7 +449,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     }
 
     if (msg.type === "LOGOUT") {
-      authToken        = null;
+      authToken = null;
       categoryMappings = {};
       stopFocus(true);
       chrome.storage.local.remove(["authToken", "lastValidated"]);
@@ -616,8 +457,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       return;
     }
   })();
-
-  return true; // Keep message channel open for async response
+  return true;
 });
 
 /* =========================================================
@@ -630,23 +470,26 @@ async function syncFocusState() {
   const data = await new Promise((resolve) => {
     chrome.storage.local.get(["focusMode", "focusLockUntil"], resolve);
   });
-
   const now = Date.now();
-
   if (data.focusMode) {
-    const locked         = data.focusLockUntil && data.focusLockUntil > now;
-    const remainingMs    = Math.max(0, (data.focusLockUntil || 0) - now);
+    const locked           = data.focusLockUntil && data.focusLockUntil > now;
+    const remainingMs      = Math.max(0, (data.focusLockUntil || 0) - now);
     const remainingMinutes = Math.ceil(remainingMs / 60000) || 25;
     startFocus(remainingMinutes, locked);
   } else {
     stopFocus(true);
   }
-
   await loadAuthToken();
   await syncCategoriesFromServer();
+  chrome.tabs.query({ active: true, lastFocusedWindow: true }, (tabs) => {
+    if (chrome.runtime.lastError) return;
+    if (tabs && tabs[0] && tabs[0].url) {
+      const d = getDomain(tabs[0].url);
+      if (d) currentDomain = d;
+    }
+  });
 }
 
-// Listen for auth token changes in storage (e.g., login from auth.html)
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area === "local" && changes.authToken) {
     loadAuthToken().then(() => syncCategoriesFromServer());

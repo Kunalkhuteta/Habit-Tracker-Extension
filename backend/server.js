@@ -677,7 +677,7 @@ app.post("/reflections", authenticateToken, async (req, res) => {
   }
 });
 
-// ==================== PREFERENCES ====================
+// ==================== PREFERENCES =====================
 
 app.get("/preferences", authenticateToken, async (req, res) => {
   try {
