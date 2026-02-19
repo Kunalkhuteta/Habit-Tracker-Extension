@@ -7,6 +7,7 @@
 */
 
 const API = typeof API_BASE !== "undefined" ? API_BASE : "https://habit-tracker-extension.onrender.com";
+// const API = typeof API_BASE !== "undefined" ? API_BASE : "http://localhost:5000";
 
 let authToken     = null;
 let currentTheme  = "light";
@@ -54,20 +55,40 @@ document.addEventListener("DOMContentLoaded", async () => {
   buildEmojiGrid();
 });
 
-/* ─── CAT CUSTOMIZATIONS (colors/emojis stored locally) ─── */
+/* ─── CAT CUSTOMIZATIONS (colors/emojis stored locally, scoped per user) ─── 
+   KEY: catCustomizations_<userId> so different accounts on the same browser
+   never see each other's custom categories, colors, or emojis. */
+
+function getCatStorageKey() {
+  // authToken encodes userId — use first 16 chars as a stable per-user key suffix
+  // Falls back to "default" if not logged in
+  if (!authToken) return "catCustomizations_default";
+  // Extract userId from token: token = base64url(userId.expiry).sig
+  try {
+    const payload = authToken.split(".")[0];
+    const decoded = atob(payload.replace(/-/g,"+").replace(/_/g,"/"));
+    const userId  = decoded.split(".")[0];
+    return `catCustomizations_${userId}`;
+  } catch {
+    return `catCustomizations_${authToken.slice(0, 16)}`;
+  }
+}
+
 async function loadCatCustomizations() {
+  const key = getCatStorageKey();
   return new Promise(resolve => {
-    chrome.storage.local.get(["catCustomizations"], res => {
+    chrome.storage.local.get([key], res => {
       void chrome.runtime.lastError;
-      catCustomizations = res.catCustomizations || {};
+      catCustomizations = res[key] || {};
       resolve();
     });
   });
 }
 
 async function saveCatCustomizations() {
+  const key = getCatStorageKey();
   return new Promise(resolve => {
-    chrome.storage.local.set({ catCustomizations }, () => {
+    chrome.storage.local.set({ [key]: catCustomizations }, () => {
       void chrome.runtime.lastError;
       resolve();
     });
@@ -388,9 +409,15 @@ async function saveSettings() {
 /* ─── LOGOUT ─── */
 async function logout() {
   if (!confirm("Sign out?")) return;
+  // Save the user-scoped key before clearing auth (so we can remove it)
+  const catKey = getCatStorageKey();
   try { await fetch(`${API}/auth/logout`,{method:"POST",headers:hdrs()}).catch(()=>{}); } catch {}
   chrome.runtime.sendMessage({type:"LOGOUT"},()=>void chrome.runtime.lastError);
-  chrome.storage.local.remove(["authToken","lastValidated"],()=>{ location.href="auth.html"; });
+  // Remove all user-scoped local data so next login starts clean
+  chrome.storage.local.remove(
+    ["authToken","lastValidated","userInfo","blockedSites", catKey],
+    () => { location.href="auth.html"; }
+  );
 }
 
 /* ─── CATEGORY EDITOR ─── */
@@ -734,10 +761,11 @@ async function addBlockedSite() {
   await loadAuthToken();
   if (btn) { btn.disabled=true; btn.textContent="…"; }
   try {
-    // Save to server
+    // 1. Save to server
     const r = await fetch(`${API}/blocked-sites`,{method:"POST",headers:hdrs(),body:JSON.stringify({site:nd})});
     if (!r.ok) { const e=await r.json().catch(()=>{}); throw new Error(e?.error||`Error ${r.status}`); }
-    // Also save to local storage so it shows even when offline
+
+    // 2. Save to local storage (so it shows even offline)
     await new Promise(resolve => {
       chrome.storage.local.get(["blockedSites"], d => {
         void chrome.runtime.lastError;
@@ -746,9 +774,12 @@ async function addBlockedSite() {
         chrome.storage.local.set({ blockedSites: local }, () => { void chrome.runtime.lastError; resolve(); });
       });
     });
+
     if (inp) inp.value="";
-    toast(`${nd} blocked`);
-    chrome.runtime.sendMessage({type:"ADD_BLOCK_SITE",site:nd},()=>void chrome.runtime.lastError);
+    toast(`${nd} blocked ✓`);
+
+    // 3. Tell background to refresh rules and reload any open blocked tabs
+    chrome.runtime.sendMessage({type:"ADD_BLOCK_SITE", site:nd}, () => void chrome.runtime.lastError);
     loadBlockedSites();
   } catch(e) { toast(e.message||"Failed","err"); }
   finally { if (btn) { btn.disabled=false; btn.textContent="Block"; } }
@@ -768,15 +799,23 @@ function updateFocusUI(on, locked) {
 }
 
 function reloadCurrentIfBlocked() {
-  fetch(`${API}/blocked-sites`,{headers:hdrs()}).then(r=>r.json()).then(blocked => {
+  // Check both server and local blocked lists, reload ALL open blocked tabs
+  Promise.all([
+    fetch(`${API}/blocked-sites`,{headers:hdrs()}).then(r=>r.json()).catch(()=>[]),
+    new Promise(r=>chrome.storage.local.get(["blockedSites"],d=>{void chrome.runtime.lastError;r(d.blockedSites||[]);}))
+  ]).then(([serverSites, localSites]) => {
+    const blocked = [...new Set([...serverSites, ...localSites])];
     if (!blocked.length) return;
-    chrome.tabs.query({active:true,lastFocusedWindow:true}, tabs=>{
+    chrome.tabs.query({windowType:"normal"}, tabs=>{
       void chrome.runtime.lastError;
-      if (!tabs?.length||!tabs[0]?.url) return;
-      try {
-        const host = new URL(tabs[0].url).hostname.replace(/^www\./,"");
-        if (blocked.some(s=>host===s||host.endsWith("."+s))) chrome.tabs.reload(tabs[0].id);
-      } catch {}
+      if (!tabs?.length) return;
+      tabs.forEach(tab => {
+        if (!tab?.url) return;
+        try {
+          const host = new URL(tab.url).hostname.replace(/^www\./,"");
+          if (blocked.some(s=>host===s||host.endsWith("."+s))) chrome.tabs.reload(tab.id);
+        } catch {}
+      });
     });
   }).catch(()=>{});
 }

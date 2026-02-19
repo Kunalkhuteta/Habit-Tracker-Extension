@@ -5,6 +5,9 @@
    in HTML. Chrome extensions block inline handlers via CSP.
 ========================================================= */
 
+// const AUTH_API = (typeof API_BASE !== "undefined" && API_BASE)
+//   ? API_BASE
+//   : "http://localhost:5000";
 const AUTH_API = (typeof API_BASE !== "undefined" && API_BASE)
   ? API_BASE
   : "https://habit-tracker-extension.onrender.com";
