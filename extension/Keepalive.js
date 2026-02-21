@@ -1,22 +1,4 @@
-/* =========================================================
-   KEEPALIVE.JS
-   
-   MV3 service workers are killed by Chrome after 30 seconds
-   of inactivity. This module uses TWO strategies together:
 
-   1. chrome.alarms (every 25s) — wakes the worker back up
-      immediately if Chrome killed it. Alarms are the ONLY
-      official API that can resurrect a dead service worker.
-
-   2. Storage heartbeat (every 20s) — while the worker IS
-      alive, writing to storage resets Chrome's idle timer,
-      preventing it from being killed in the first place.
-
-   Import this at the TOP of background.js:
-     importScripts('keepalive.js');
-   
-   Or just paste the contents at the top of background.js.
-========================================================= */
 
 const KEEPALIVE_ALARM_NAME = "focus-tracker-keepalive";
 const HEARTBEAT_INTERVAL_MS = 20 * 1000; // 20 seconds

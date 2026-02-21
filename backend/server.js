@@ -80,11 +80,7 @@ try {
 }
 
 // ==================== GOOGLE OAUTH ====================
-// Uses Web Application client type — works on ALL browsers (Chrome, Edge, Firefox, Opera…)
-// Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET env vars (from Google Cloud Console)
-// Authorized redirect URI to register in Google Cloud Console:
-//   https://habit-tracker-extension.onrender.com/auth/google/callback
-//   http://localhost:5000/auth/google/callback   ← for local dev
+
 const googleClient = GOOGLE_CLIENT_ID
   ? new OAuth2Client(GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET)
   : null;
@@ -305,8 +301,7 @@ async function ensurePreferences(userId) {
 }
 
 // ==================== GOOGLE OAUTH HELPERS ====================
-// Tiny HTML page that closes the popup and sends the result
-// back to the extension window via postMessage
+
 function closePopupHTML(token, user, error) {
   const payload = token
     ? JSON.stringify({ type: "FOCUS_TRACKER_AUTH", token, user })
@@ -492,20 +487,7 @@ app.post("/auth/google", async (req, res) => {
 });
 
 // ==================== GOOGLE WEB OAUTH POPUP FLOW ====================
-// Works on ALL browsers — Chrome, Edge, Firefox, Opera, Brave, Safari…
-// No chrome.identity needed. Just a standard browser popup + redirect.
-//
-// SETUP REQUIRED:
-//   1. Google Cloud Console → Credentials → Web Application OAuth client
-//   2. Add these Authorized redirect URIs:
-//        https://habit-tracker-extension.onrender.com/auth/google/callback
-//        http://localhost:5000/auth/google/callback
-//   3. Set env vars on Render:
-//        GOOGLE_CLIENT_ID = <your web client id>
-//        PROD_URL = https://habit-tracker-extension.onrender.com
 
-// GET /auth/google/popup — auth.js opens this URL in a small popup window.
-// We immediately redirect to Google's OAuth consent screen.
 app.get("/auth/google/popup", (req, res) => {
   if (!googleClient || !GOOGLE_CLIENT_ID) {
     return res.status(501).send(closePopupHTML(null, null,

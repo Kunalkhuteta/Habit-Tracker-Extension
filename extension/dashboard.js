@@ -1,12 +1,4 @@
-/* dashboard.js — Focus Tracker (FIXED)
-   Key fixes:
-   1. Category API uses /categories endpoint (matches server.js)
-   2. Category editor correctly POSTs {domain, category} pairs
-   3. startTicker tracks all time (no idle pause)
-   4. Saves work correctly, errors show as toasts
-   5. timeData and blockedSites are scoped per-user via getUserId()
-      so switching accounts never leaks one user's data to another
-*/
+
 
 const API = typeof API_BASE !== "undefined" ? API_BASE : "https://habit-tracker-extension.onrender.com";
 // const API = typeof API_BASE !== "undefined" ? API_BASE : "http://localhost:5000";
@@ -40,13 +32,6 @@ const hdrs = () => authToken
   ? { "Content-Type":"application/json", Authorization:`Bearer ${authToken}` }
   : { "Content-Type":"application/json" };
 
-/* ── Global auth-aware fetch ────────────────────────────────
-   Wraps every API call. If the server returns 401 or 403,
-   the stored token is invalid (expired, JWT_SECRET changed,
-   or the account was deleted). Clear it and send the user
-   back to the login screen so they can get a fresh token.
-   This also shows a toast so the user knows what happened.
-──────────────────────────────────────────────────────────── */
 let _authRedirecting = false; // prevent multiple simultaneous redirects
 async function apiFetch(url, options = {}) {
   const res = await fetch(url, options);
@@ -106,19 +91,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   buildEmojiGrid();
 });
 
-/* =========================================================
-   PER-USER STORAGE KEY HELPERS
-   
-   Every piece of user-specific data is stored under a key
-   suffixed with the userId extracted from the auth token.
-   This prevents data leaking between accounts on the same
-   browser profile when switching users.
-   
-   getUserId()        — extracts userId from the token payload
-   getCatStorageKey() — "catCustomizations_<userId>"
-   getTimeDataKey()   — "timeData_<userId>"
-   getBlockedSitesKey()— "blockedSites_<userId>"
-========================================================= */
+
 
 function getUserId() {
   if (!authToken) return "default";
@@ -858,10 +831,6 @@ function renderSettingsCatList() {
   });
 }
 
-/* ─── BLOCKED SITES ─── 
-   Merges sites from the server API AND from user-scoped chrome.storage.local
-   so that any site blocked locally (before sync, or while offline) 
-   also shows up in the list. Both sources are deduplicated. */
 async function loadBlockedSites() {
   const list = document.getElementById("blockedSitesList");
   if (!list) return;

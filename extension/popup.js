@@ -1,11 +1,4 @@
-/* =========================================================
-   popup.js
-   - Reads theme + accentColor from storage → applies same
-     data-theme / data-accent attributes as dashboard so the
-     popup is always pixel-identical to whatever the user set
-   - Hard Focus uses an in-popup time picker (no native prompt)
-   - timeData read from user-scoped key to avoid cross-account leaks
-========================================================= */
+
 
 /* ── Formatting ── */
 function formatTime(ms) {
@@ -37,12 +30,7 @@ function getUserId(token) {
 
 function timeDataKey(token) { return `timeData_${getUserId(token)}`; }
 
-/* =========================================================
-   THEME SYNC
-   Reads the same keys dashboard.js writes (theme, accentColor)
-   and applies data-theme / data-accent to <html> so every
-   CSS variable resolves identically to the dashboard.
-========================================================= */
+
 function applyTheme(theme, accent) {
   const html = document.documentElement;
   if (theme === "dark") html.setAttribute("data-theme", "dark");

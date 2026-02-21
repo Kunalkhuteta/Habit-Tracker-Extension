@@ -2,158 +2,356 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>Site Blocked • Focus Mode</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-
+  <title>Site Blocked · Focus Mode</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600&family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    /* ── Design tokens — same as dashboard ── */
     :root {
-      --bg: #0f172a;
-      --card: #020617;
-      --accent: #22c55e;
-      --text: #f1f5f9;
-      --muted: #94a3b8;
+      --bg:          #f5f3ef;
+      --bg-card:     #fdfcfa;
+      --bg-raised:   #ffffff;
+      --bg-subtle:   #ede9e3;
+      --text:        #1c1917;
+      --text-2:      #57534e;
+      --text-3:      #a8a29e;
+      --border:      #e0dbd4;
+      --shadow-sm:   0 2px 8px rgba(28,25,23,.07);
+      --shadow-md:   0 8px 32px rgba(28,25,23,.10);
+      --shadow-lg:   0 24px 72px rgba(28,25,23,.14);
+      --accent:      #4f46e5;
+      --accent-soft: rgba(79,70,229,.08);
+      --accent-grad: linear-gradient(135deg,#4f46e5 0%,#7c3aed 100%);
+      --r:           14px;
+      --r-lg:        20px;
     }
-
-    * {
-      box-sizing: border-box;
+    [data-theme="dark"] {
+      --bg:          #111210;
+      --bg-card:     #18191a;
+      --bg-raised:   #1f2022;
+      --bg-subtle:   #25272a;
+      --text:        #f2ede8;
+      --text-2:      #9c9490;
+      --text-3:      #5c5650;
+      --border:      #2a2c2e;
+      --shadow-sm:   0 2px 8px rgba(0,0,0,.4);
+      --shadow-md:   0 8px 32px rgba(0,0,0,.5);
+      --shadow-lg:   0 24px 72px rgba(0,0,0,.7);
     }
+    [data-accent="blue"]   { --accent:#2563eb; --accent-soft:rgba(37,99,235,.08);  --accent-grad:linear-gradient(135deg,#2563eb,#1d4ed8); }
+    [data-accent="green"]  { --accent:#16a34a; --accent-soft:rgba(22,163,74,.08);  --accent-grad:linear-gradient(135deg,#16a34a,#15803d); }
+    [data-accent="purple"] { --accent:#7c3aed; --accent-soft:rgba(124,58,237,.08); --accent-grad:linear-gradient(135deg,#7c3aed,#6d28d9); }
+    [data-accent="red"]    { --accent:#dc2626; --accent-soft:rgba(220,38,38,.08);  --accent-grad:linear-gradient(135deg,#dc2626,#b91c1c); }
+    [data-accent="orange"] { --accent:#ea580c; --accent-soft:rgba(234,88,12,.08);  --accent-grad:linear-gradient(135deg,#ea580c,#c2410c); }
+    [data-accent="indigo"] { --accent:#4f46e5; --accent-soft:rgba(79,70,229,.08);  --accent-grad:linear-gradient(135deg,#4f46e5,#7c3aed); }
 
+    /* ── Page ── */
     body {
-      margin: 0;
-      height: 100vh;
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
-        "Helvetica Neue", Arial, sans-serif;
-      background: radial-gradient(circle at top, #020617, var(--bg));
+      font-family: 'Instrument Sans', system-ui, sans-serif;
+      background: var(--bg);
+      min-height: 100vh;
       display: flex;
       align-items: center;
       justify-content: center;
+      padding: 24px;
+      -webkit-font-smoothing: antialiased;
       color: var(--text);
+      position: relative;
+      overflow: hidden;
+      transition: background .3s, color .3s;
     }
 
-    .card {
-      background: linear-gradient(180deg, #020617, var(--card));
-      border-radius: 20px;
-      padding: 48px 40px;
-      max-width: 480px;
-      width: 90%;
-      text-align: center;
-      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6);
-      border: 1px solid rgba(255, 255, 255, 0.08);
-    }
-
-    .icon {
-      width: 80px;
-      height: 80px;
-      margin: 0 auto 24px;
+    /* Atmospheric background blobs */
+    .bg-blob {
+      position: fixed;
       border-radius: 50%;
-      background: rgba(34, 197, 94, 0.15);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 40px;
-      animation: pulse 2s infinite;
+      pointer-events: none;
+      filter: blur(80px);
+      z-index: 0;
+    }
+    .bg-blob-1 {
+      width: 600px; height: 600px;
+      top: -200px; right: -200px;
+      background: var(--accent-soft);
+      animation: blob-drift 12s ease-in-out infinite;
+    }
+    .bg-blob-2 {
+      width: 400px; height: 400px;
+      bottom: -150px; left: -100px;
+      background: var(--accent-soft);
+      animation: blob-drift 16s ease-in-out infinite;
+      animation-delay: -6s;
+    }
+    @keyframes blob-drift {
+      0%,100% { transform: scale(1) translate(0,0); }
+      33%      { transform: scale(1.06) translate(20px,-15px); }
+      66%      { transform: scale(.96) translate(-15px,20px); }
     }
 
-    @keyframes pulse {
-      0%, 100% {
-        transform: scale(1);
-      }
-      50% {
-        transform: scale(1.05);
-      }
+    /* ── Card ── */
+    .card {
+      position: relative; z-index: 1;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--r-lg);
+      padding: 48px 40px 40px;
+      max-width: 500px; width: 100%;
+      box-shadow: var(--shadow-lg);
+      text-align: center;
+      animation: card-in .5s cubic-bezier(.22,.68,0,1.12);
+    }
+    @keyframes card-in {
+      from { opacity:0; transform:translateY(24px) scale(.96); }
+      to   { opacity:1; transform:none; }
     }
 
-    h1 {
-      font-size: 28px;
-      margin: 0 0 12px;
-      font-weight: 700;
-      background: linear-gradient(135deg, #22c55e, #16a34a);
-      -webkit-background-clip: text;
-      -webkit-text-fill-color: transparent;
+    /* Top gradient bar */
+    .card::before {
+      content: '';
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      height: 3px;
+      background: var(--accent-grad);
+      border-radius: var(--r-lg) var(--r-lg) 0 0;
+    }
+
+    /* ── Shield icon ── */
+    .shield {
+      width: 80px; height: 80px;
+      margin: 0 auto 24px;
+      background: var(--accent-grad);
+      border-radius: 24px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 36px;
+      box-shadow: 0 8px 28px rgba(0,0,0,.15), 0 0 0 8px var(--accent-soft);
+      animation: shield-pulse 3s ease-in-out infinite;
+    }
+    @keyframes shield-pulse {
+      0%,100% { box-shadow: 0 8px 28px rgba(0,0,0,.15), 0 0 0 8px var(--accent-soft); }
+      50%      { box-shadow: 0 8px 28px rgba(0,0,0,.15), 0 0 0 16px transparent; }
+    }
+
+    /* ── Badge ── */
+    .badge {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 5px 14px;
+      border-radius: 99px;
+      background: var(--accent-soft);
+      border: 1px solid var(--accent);
+      color: var(--accent);
+      font-size: 11px; font-weight: 700;
+      letter-spacing: .1em; text-transform: uppercase;
+      margin-bottom: 18px;
+    }
+    .badge-dot {
+      width: 6px; height: 6px;
+      border-radius: 50%;
+      background: var(--accent);
+      animation: blink 1.5s ease-in-out infinite;
+    }
+    @keyframes blink { 0%,100%{opacity:1} 50%{opacity:.3} }
+
+    /* ── Heading ── */
+    .card h1 {
+      font-family: 'Instrument Serif', serif;
+      font-style: italic; font-weight: 400;
+      font-size: 32px; letter-spacing: -.4px;
+      color: var(--text); margin-bottom: 6px; line-height: 1.2;
+    }
+    .card h1 strong {
+      font-style: normal;
+      background: var(--accent-grad);
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent;
       background-clip: text;
     }
-
-    p {
-      margin: 0 0 24px;
-      color: var(--muted);
-      font-size: 16px;
-      line-height: 1.6;
+    .card-subtitle {
+      font-size: 15px; color: var(--text-2);
+      line-height: 1.65; margin-bottom: 28px;
     }
 
-    .badge {
-      display: inline-block;
-      padding: 10px 18px;
-      border-radius: 999px;
-      background: rgba(34, 197, 94, 0.15);
-      color: var(--accent);
-      font-size: 13px;
-      font-weight: 600;
-      letter-spacing: 0.05em;
-      text-transform: uppercase;
+    /* ── Blocked domain chip ── */
+    .domain-chip {
+      display: inline-flex; align-items: center; gap: 7px;
+      padding: 8px 16px;
+      background: var(--bg-subtle);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 13px; color: var(--text-2);
+      margin-bottom: 28px;
+    }
+    .domain-chip-icon { opacity: .5; font-size: 12px; }
+
+    /* ── Divider ── */
+    .divider {
+      height: 1px; background: var(--border);
+      margin: 0 0 24px;
+    }
+
+    /* ── Quote ── */
+    .quote-wrap {
+      background: var(--bg-subtle);
+      border-left: 3px solid var(--accent);
+      border-radius: 0 var(--r) var(--r) 0;
+      padding: 16px 18px;
+      text-align: left;
       margin-bottom: 24px;
     }
-
-    .quote {
-      margin-top: 32px;
-      padding: 20px;
-      background: rgba(255, 255, 255, 0.04);
-      border-left: 3px solid var(--accent);
-      border-radius: 8px;
-      font-size: 14px;
-      font-style: italic;
-      color: var(--muted);
+    .quote-text {
+      font-family: 'Instrument Serif', serif;
+      font-style: italic; font-size: 15px;
+      color: var(--text-2); line-height: 1.6;
+      margin-bottom: 6px;
+    }
+    .quote-author {
+      font-size: 12px; font-weight: 600;
+      color: var(--text-3); letter-spacing: .04em;
+      text-transform: uppercase;
     }
 
-    footer {
-      margin-top: 24px;
-      font-size: 13px;
-      color: #64748b;
-      line-height: 1.6;
+    /* ── Suggestions grid ── */
+    .suggestions {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin-bottom: 24px;
+    }
+    .suggestion {
+      background: var(--bg-subtle);
+      border: 1px solid var(--border);
+      border-radius: var(--r);
+      padding: 14px;
+      text-align: left;
+      transition: all .16s;
+      cursor: default;
+    }
+    .suggestion:hover {
+      background: var(--bg-raised);
+      border-color: var(--accent);
+      transform: translateY(-2px);
+      box-shadow: var(--shadow-sm);
+    }
+    .suggestion-icon { font-size: 20px; margin-bottom: 6px; }
+    .suggestion-title {
+      font-size: 12.5px; font-weight: 600;
+      color: var(--text); margin-bottom: 2px;
+    }
+    .suggestion-desc {
+      font-size: 11.5px; color: var(--text-3); line-height: 1.4;
     }
 
-    .progress-ring {
-      width: 120px;
-      height: 120px;
-      margin: 24px auto;
+    /* ── Footer ── */
+    .card-footer {
+      font-size: 12.5px; color: var(--text-3); line-height: 1.6;
+      padding-top: 18px;
+      border-top: 1px solid var(--border);
     }
-
-    .progress-ring__circle {
-      stroke: var(--accent);
-      stroke-width: 4;
-      fill: transparent;
-      animation: draw 2s ease-out forwards;
-    }
-
-    @keyframes draw {
-      to {
-        stroke-dashoffset: 0;
-      }
-    }
+    .card-footer strong { color: var(--text-2); }
+    .card-footer .accent { color: var(--accent); font-weight: 600; }
   </style>
 </head>
 <body>
+
+  <!-- Background blobs -->
+  <div class="bg-blob bg-blob-1"></div>
+  <div class="bg-blob bg-blob-2"></div>
+
   <div class="card">
-    <div class="icon">⏳</div>
 
-    <h1>Focus Mode Active</h1>
+    <div class="shield">🛡</div>
 
-    <div class="badge">🔒 BLOCKED</div>
-
-    <p>
-      This website is blocked to help you stay focused and productive.
-      Your focus session is currently in progress.
-    </p>
-
-    <div class="quote">
-      "Success is the sum of small efforts, repeated day in and day out."
-      <br><small>— Robert Collier</small>
+    <div class="badge">
+      <span class="badge-dot"></span>
+      Focus Mode Active
     </div>
 
-    <footer>
-      <strong>💡 Pro Tip:</strong> Use this time to work on your most important task.
-      <br>
-      Every moment of focus compounds into long-term success.
-    </footer>
+    <h1>Stay in the <strong>zone.</strong></h1>
+    <p class="card-subtitle">
+      This site is blocked while your focus session is running.<br>
+      Every minute of deep work adds up.
+    </p>
+
+    <div class="domain-chip">
+      <span class="domain-chip-icon">🌐</span>
+      <span id="blockedDomain">this site</span>
+    </div>
+
+    <div class="divider"></div>
+
+    <div class="quote-wrap">
+      <div class="quote-text" id="quoteText">
+        "The successful warrior is the average man, with laser-like focus."
+      </div>
+      <div class="quote-author" id="quoteAuthor">— Bruce Lee</div>
+    </div>
+
+    <div class="suggestions">
+      <div class="suggestion">
+        <div class="suggestion-icon">📋</div>
+        <div class="suggestion-title">Review your tasks</div>
+        <div class="suggestion-desc">Pick the next most important thing to work on</div>
+      </div>
+      <div class="suggestion">
+        <div class="suggestion-icon">📝</div>
+        <div class="suggestion-title">Take a note</div>
+        <div class="suggestion-desc">Write down what you wanted here — revisit later</div>
+      </div>
+      <div class="suggestion">
+        <div class="suggestion-icon">🧘</div>
+        <div class="suggestion-title">Take a breath</div>
+        <div class="suggestion-desc">Inhale 4s · hold 4s · exhale 4s</div>
+      </div>
+      <div class="suggestion">
+        <div class="suggestion-icon">💧</div>
+        <div class="suggestion-title">Drink water</div>
+        <div class="suggestion-desc">Hydration keeps focus sharp</div>
+      </div>
+    </div>
+
+    <div class="card-footer">
+      <strong>Focus session in progress.</strong> This block was set by
+      <span class="accent">Focus Tracker</span> to keep you on track.
+      Stay the course — you've got this.
+    </div>
+
   </div>
+
+  <script src="config.js"></script>
+  <script>
+    // Apply saved theme from extension storage
+    if (typeof chrome !== 'undefined' && chrome.storage) {
+      chrome.storage.local.get(['theme', 'accentColor'], (d) => {
+        const html   = document.documentElement;
+        const theme  = d.theme       || 'light';
+        const accent = d.accentColor || 'indigo';
+        if (theme === 'dark') html.setAttribute('data-theme', 'dark');
+        html.setAttribute('data-accent', accent);
+      });
+    }
+
+    // Show current blocked domain
+    try {
+      const host = location.hostname || new URLSearchParams(location.search).get('site');
+      if (host) document.getElementById('blockedDomain').textContent = host;
+    } catch {}
+
+    // Rotating quotes
+    const quotes = [
+      { text: "The successful warrior is the average man, with laser-like focus.", author: "Bruce Lee" },
+      { text: "It's not that I'm so smart, it's just that I stay with problems longer.", author: "Albert Einstein" },
+      { text: "Success is the sum of small efforts, repeated day in and day out.", author: "Robert Collier" },
+      { text: "Deep work is the ability to focus without distraction on a cognitively demanding task.", author: "Cal Newport" },
+      { text: "You don't need more time. You need to decide.", author: "Seth Godin" },
+      { text: "Where focus goes, energy flows.", author: "Tony Robbins" },
+      { text: "The art of being wise is knowing what to overlook.", author: "William James" },
+    ];
+    const q = quotes[Math.floor(Math.random() * quotes.length)];
+    document.getElementById('quoteText').textContent   = `"${q.text}"`;
+    document.getElementById('quoteAuthor').textContent = `— ${q.author}`;
+  </script>
 </body>
 </html>

@@ -110,19 +110,7 @@ function getAuthHeaders() {
     : { "Content-Type": "application/json" };
 }
 
-/* =========================================================
-   PER-USER STORAGE KEY HELPERS
-   
-   Every piece of user-specific data is stored under a key
-   suffixed with the userId extracted from the auth token.
-   This prevents data leaking between accounts on the same
-   browser profile when switching users.
-   
-   getUserId() — extracts userId from the token payload.
-     Token format: base64url(userId.expiry).sig
-   timeDataKey()     → "timeData_<userId>"
-   blockedSitesKey() → "blockedSites_<userId>"
-========================================================= */
+
 function getUserId() {
   if (!authToken) return "default";
   try {
@@ -266,16 +254,7 @@ function isBlockedUrl(url, blockedSites) {
   } catch { return false; }
 }
 
-/* =========================================================
-   DNR RULES — THE FIX IS HERE
-   
-   BUG: Both functions defined `const removeIds = ...` but then
-   used `removeRuleIds` (undefined variable) in the API call.
-   
-   FIX: Use `removeIds` consistently — it's the correct variable name.
-   Both functions now await the updateDynamicRules call so errors
-   surface as caught exceptions rather than silent failures.
-========================================================= */
+
 async function enableBlocking() {
   const sites = await getBlockedSites();
 
@@ -559,10 +538,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   return true; // keep message channel open for async sendResponse
 });
 
-/* =========================================================
-   STARTUP — restore focus state that was active before
-   browser was closed / worker was killed
-========================================================= */
 chrome.runtime.onStartup.addListener(restoreState);
 chrome.runtime.onInstalled.addListener(restoreState);
 
