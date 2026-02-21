@@ -623,6 +623,9 @@ app.get("/auth/google/debug", (req, res) => {
 
 // ==================== OTHER AUTH ROUTES ====================
 app.post("/auth/forgot-password", async (req, res) => {
+  console.log("🔥 FORGOT PASSWORD ROUTE HIT");
+  console.log("SERVER ENV:", process.env.NODE_ENV);
+console.log("EMAIL_USER:", process.env.EMAIL_USER);
   const { email } = req.body;
   if (!email) return res.status(400).json({ error: "Email required" });
   try {
