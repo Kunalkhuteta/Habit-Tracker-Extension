@@ -4,159 +4,325 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Focus Tracker — Sign In</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600&family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    /* ── Exact same tokens as dashboard.css ── */
+    :root {
+      --bg:          #f5f3ef;
+      --bg-card:     #fdfcfa;
+      --bg-raised:   #ffffff;
+      --bg-subtle:   #ede9e3;
+      --bg-sunken:   #e8e4de;
+      --text:        #1c1917;
+      --text-2:      #57534e;
+      --text-3:      #a8a29e;
+      --border:      #e0dbd4;
+      --border-2:    #d0cac2;
+      --shadow-sm:   0 2px 8px rgba(28,25,23,.07), 0 1px 2px rgba(28,25,23,.04);
+      --shadow-md:   0 8px 28px rgba(28,25,23,.10), 0 2px 6px rgba(28,25,23,.06);
+      --shadow-lg:   0 24px 64px rgba(28,25,23,.13), 0 4px 16px rgba(28,25,23,.07);
+      --accent:      #4f46e5;
+      --accent-2:    #4338ca;
+      --accent-soft: rgba(79,70,229,.1);
+      --accent-grad: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%);
+      --r:           12px;
+      --r-lg:        18px;
+      --r-xl:        26px;
+    }
+    [data-theme="dark"] {
+      --bg:          #111210;
+      --bg-card:     #18191a;
+      --bg-raised:   #1f2022;
+      --bg-subtle:   #25272a;
+      --bg-sunken:   #0e0f0f;
+      --text:        #f2ede8;
+      --text-2:      #9c9490;
+      --text-3:      #5c5650;
+      --border:      #2a2c2e;
+      --border-2:    #363a3c;
+      --shadow-sm:   0 2px 8px rgba(0,0,0,.35);
+      --shadow-md:   0 8px 28px rgba(0,0,0,.45);
+      --shadow-lg:   0 24px 64px rgba(0,0,0,.6);
+    }
+    [data-accent="blue"]   { --accent:#2563eb; --accent-2:#1d4ed8; --accent-soft:rgba(37,99,235,.1);  --accent-grad:linear-gradient(135deg,#2563eb,#1d4ed8); }
+    [data-accent="green"]  { --accent:#16a34a; --accent-2:#15803d; --accent-soft:rgba(22,163,74,.1);  --accent-grad:linear-gradient(135deg,#16a34a,#15803d); }
+    [data-accent="purple"] { --accent:#7c3aed; --accent-2:#6d28d9; --accent-soft:rgba(124,58,237,.1); --accent-grad:linear-gradient(135deg,#7c3aed,#6d28d9); }
+    [data-accent="red"]    { --accent:#dc2626; --accent-2:#b91c1c; --accent-soft:rgba(220,38,38,.1);  --accent-grad:linear-gradient(135deg,#dc2626,#b91c1c); }
+    [data-accent="orange"] { --accent:#ea580c; --accent-2:#c2410c; --accent-soft:rgba(234,88,12,.1);  --accent-grad:linear-gradient(135deg,#ea580c,#c2410c); }
+    [data-accent="indigo"] { --accent:#4f46e5; --accent-2:#4338ca; --accent-soft:rgba(79,70,229,.1);  --accent-grad:linear-gradient(135deg,#4f46e5,#7c3aed); }
 
     body {
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      font-family: 'Instrument Sans', sans-serif;
+      background: var(--bg);
       min-height: 100vh;
       display: flex;
       align-items: center;
       justify-content: center;
-      padding: 20px;
+      padding: 24px;
+      transition: background .25s, color .25s;
+      -webkit-font-smoothing: antialiased;
+      position: relative;
+      overflow: hidden;
     }
 
+    /* Atmospheric orbs that adapt to accent + theme */
+    .orb {
+      position: fixed;
+      border-radius: 50%;
+      pointer-events: none;
+      z-index: 0;
+    }
+    .orb-tl {
+      width: 540px; height: 540px;
+      top: -200px; left: -170px;
+      background: radial-gradient(circle, var(--accent-soft) 0%, transparent 65%);
+      transition: background .4s;
+    }
+    .orb-br {
+      width: 400px; height: 400px;
+      bottom: -130px; right: -110px;
+      background: radial-gradient(circle, rgba(124,58,237,.06) 0%, transparent 70%);
+      transition: background .4s;
+    }
+    [data-theme="dark"] .orb-br {
+      background: radial-gradient(circle, rgba(124,58,237,.035) 0%, transparent 70%);
+    }
+
+    /* ── Card ── */
     .card {
-      background: white;
-      border-radius: 20px;
-      padding: 40px;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--r-xl);
+      padding: 36px 36px 30px;
       width: 100%;
-      max-width: 420px;
-      box-shadow: 0 25px 50px rgba(0,0,0,0.25);
+      max-width: 412px;
+      box-shadow: var(--shadow-lg);
+      position: relative;
+      z-index: 1;
+      animation: card-in .3s cubic-bezier(.22,.68,0,1.15);
+      transition: background .25s, border-color .25s, box-shadow .25s;
+    }
+    @keyframes card-in {
+      from { opacity:0; transform: translateY(16px) scale(.975); }
+      to   { opacity:1; transform: none; }
     }
 
-    .logo { text-align: center; margin-bottom: 28px; }
-    .logo h1 { font-size: 26px; color: #1e293b; font-weight: 700; }
-    .logo p  { color: #64748b; font-size: 14px; margin-top: 4px; }
+    /* ── Logo ── */
+    .logo { text-align: center; margin-bottom: 26px; }
+    .logo-icon {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 54px; height: 54px; border-radius: 16px;
+      background: var(--accent-grad); font-size: 26px; margin-bottom: 12px;
+      box-shadow: 0 8px 24px rgba(0,0,0,.13);
+      transition: background .25s;
+    }
+    .logo h1 {
+      font-family: 'Instrument Serif', serif;
+      font-style: italic; font-size: 22px; font-weight: 400;
+      color: var(--text); letter-spacing: -.3px; line-height: 1.2;
+    }
+    .logo h1 strong {
+      font-style: normal;
+      background: var(--accent-grad);
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+      background-clip: text; font-weight: 600;
+    }
+    .logo p { font-size: 12.5px; color: var(--text-3); margin-top: 5px; }
 
+    /* ── Tabs ── */
     .tabs {
-      display: flex;
-      background: #f1f5f9;
-      border-radius: 10px;
-      padding: 4px;
-      margin-bottom: 24px;
+      display: flex; background: var(--bg-subtle); border: 1px solid var(--border);
+      border-radius: var(--r); padding: 3px; margin-bottom: 20px; gap: 2px;
+      transition: background .25s, border-color .25s;
     }
     .tab {
-      flex: 1; padding: 9px; border: none; background: none;
-      border-radius: 8px; font-size: 14px; font-weight: 500;
-      color: #64748b; cursor: pointer; transition: all 0.2s;
+      flex: 1; padding: 8px; border: none; background: none; border-radius: 9px;
+      font-size: 13px; font-weight: 600; font-family: 'Instrument Sans', sans-serif;
+      color: var(--text-3); cursor: pointer; transition: all .16s; letter-spacing: .01em;
     }
     .tab.active {
-      background: white; color: #1e293b;
-      box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+      background: var(--bg-raised); color: var(--text); box-shadow: var(--shadow-sm);
     }
+    .tab:hover:not(.active) { color: var(--text-2); }
 
+    /* ── Messages ── */
+    .msg {
+      padding: 10px 13px; border-radius: var(--r); font-size: 13px;
+      margin-bottom: 14px; display: none; line-height: 1.45; font-weight: 500;
+    }
+    .msg.show    { display: block; animation: msg-in .16s ease; }
+    .msg.error   { background: rgba(220,38,38,.08);  color: #dc2626; border: 1px solid rgba(220,38,38,.18); }
+    .msg.success { background: rgba(22,163,74,.08);  color: #16a34a; border: 1px solid rgba(22,163,74,.18); }
+    .msg.info    { background: var(--accent-soft);   color: var(--accent); border: 1px solid rgba(79,70,229,.18); }
+    @keyframes msg-in { from { opacity:0; transform:translateY(-3px); } to { opacity:1; transform:none; } }
+
+    /* ── Section visibility ── */
     .section { display: none; }
-    .section.active { display: block; }
+    .section.active { display: block; animation: fade-up .2s ease; }
+    @keyframes fade-up { from { opacity:0; transform:translateY(5px); } to { opacity:1; transform:none; } }
 
+    /* ── Google button ── */
     .btn-google {
-      width: 100%; padding: 12px;
-      border: 2px solid #e2e8f0; border-radius: 10px;
-      background: white; font-size: 14px; font-weight: 600;
-      color: #374151; cursor: pointer;
-      display: flex; align-items: center; justify-content: center; gap: 10px;
-      transition: border-color 0.2s, background 0.2s;
-      margin-bottom: 20px;
+      width: 100%; padding: 11px 16px;
+      border: 1px solid var(--border); border-radius: var(--r);
+      background: var(--bg-raised);
+      font-size: 13.5px; font-weight: 600; font-family: 'Instrument Sans', sans-serif;
+      color: var(--text-2); cursor: pointer;
+      display: flex; align-items: center; justify-content: center; gap: 9px;
+      transition: all .16s; margin-bottom: 5px; box-shadow: var(--shadow-sm);
     }
-    .btn-google:hover { border-color: #3b82f6; background: #f8faff; }
-    .btn-google img   { width: 20px; height: 20px; }
+    .btn-google:hover:not(:disabled) {
+      border-color: var(--accent); color: var(--text);
+      transform: translateY(-1px); box-shadow: var(--shadow-md);
+    }
+    .btn-google:disabled { opacity: .48; cursor: not-allowed; }
+    .btn-google img { width: 17px; height: 17px; flex-shrink: 0; }
 
+    /* hint below google button */
+    .google-hint {
+      font-size: 11px; color: var(--text-3); text-align: center;
+      margin-bottom: 14px; min-height: 15px; line-height: 1.4;
+    }
+
+    /* ── Divider ── */
     .divider {
-      display: flex; align-items: center; gap: 12px;
-      margin-bottom: 20px; color: #94a3b8; font-size: 13px;
+      display: flex; align-items: center; gap: 10px; margin-bottom: 16px;
+      color: var(--text-3); font-size: 11px; font-weight: 600;
+      letter-spacing: .07em; text-transform: uppercase;
     }
     .divider::before, .divider::after {
-      content: ""; flex: 1; height: 1px; background: #e2e8f0;
+      content: ''; flex: 1; height: 1px; background: var(--border); transition: background .25s;
     }
 
-    .field { margin-bottom: 16px; }
-    .field label { display: block; font-size: 13px; font-weight: 600; color: #374151; margin-bottom: 6px; }
-    .field input {
-      width: 100%; padding: 12px 14px;
-      border: 2px solid #e2e8f0; border-radius: 10px;
-      font-size: 14px; color: #1e293b;
-      transition: border-color 0.2s; outline: none;
+    /* ── Fields ── */
+    .field { margin-bottom: 13px; }
+    .field label {
+      display: block; font-size: 11px; font-weight: 600;
+      letter-spacing: .07em; text-transform: uppercase;
+      color: var(--text-3); margin-bottom: 5px;
     }
-    .field input:focus { border-color: #3b82f6; }
+    .field input {
+      width: 100%; padding: 10px 12px;
+      border: 1px solid var(--border); border-radius: var(--r);
+      background: var(--bg-subtle); color: var(--text);
+      font-size: 14px; font-family: 'Instrument Sans', sans-serif;
+      outline: none;
+      transition: border-color .14s, background .14s, box-shadow .14s;
+    }
+    .field input:focus {
+      border-color: var(--accent); background: var(--bg-raised);
+      box-shadow: 0 0 0 3px var(--accent-soft);
+    }
+    .field input::placeholder { color: var(--text-3); }
+
+    /* ── Password strength ── */
+    .strength-bar {
+      height: 3px; border-radius: 99px; background: var(--bg-sunken);
+      margin-top: 7px; overflow: hidden;
+    }
+    .strength-fill { height: 100%; border-radius: 99px; transition: width .3s, background .3s; width: 0%; }
+    .strength-text { font-size: 11px; margin-top: 3px; font-weight: 500; min-height: 14px; }
+
+    /* ── Buttons ── */
+    button { font-family: 'Instrument Sans', sans-serif; cursor: pointer; border: none; }
 
     .btn-primary {
-      width: 100%; padding: 13px;
-      background: linear-gradient(135deg, #667eea, #764ba2);
-      color: white; border: none; border-radius: 10px;
-      font-size: 15px; font-weight: 600; cursor: pointer;
-      transition: opacity 0.2s, transform 0.1s; margin-top: 4px;
+      width: 100%; padding: 11px;
+      background: var(--accent-grad); color: white;
+      border-radius: var(--r); font-size: 14px; font-weight: 600;
+      letter-spacing: .01em; cursor: pointer;
+      transition: opacity .16s, transform .14s, box-shadow .16s;
+      margin-top: 4px; box-shadow: 0 2px 10px rgba(0,0,0,.12);
     }
-    .btn-primary:hover   { opacity: 0.9; }
-    .btn-primary:active  { transform: scale(0.99); }
-    .btn-primary:disabled{ opacity: 0.6; cursor: not-allowed; }
+    .btn-primary:hover:not(:disabled) {
+      opacity: .9; transform: translateY(-1px); box-shadow: 0 6px 20px rgba(0,0,0,.18);
+    }
+    .btn-primary:active:not(:disabled) { transform: scale(.98); }
+    .btn-primary:disabled { opacity: .4; cursor: not-allowed; transform: none; }
 
     .btn-link {
-      background: none; border: none; color: #3b82f6;
-      font-size: 13px; cursor: pointer; padding: 0; text-decoration: underline;
+      background: none; color: var(--accent);
+      font-size: 12.5px; font-weight: 500; cursor: pointer; padding: 0;
+      transition: opacity .14s;
     }
-    .btn-link:hover { color: #2563eb; }
+    .btn-link:hover { opacity: .7; }
 
-    .strength-bar { height: 4px; border-radius: 2px; background: #e2e8f0; margin-top: 6px; overflow: hidden; }
-    .strength-fill { height: 100%; border-radius: 2px; transition: width 0.3s, background 0.3s; width: 0%; }
-    .strength-text { font-size: 11px; margin-top: 3px; }
-
-    .msg {
-      padding: 12px 14px; border-radius: 10px; font-size: 13px;
-      margin-bottom: 16px; display: none;
-    }
-    .msg.error   { background: #fef2f2; color: #dc2626; border: 1px solid #fecaca; }
-    .msg.success { background: #f0fdf4; color: #16a34a; border: 1px solid #bbf7d0; }
-    .msg.info    { background: #eff6ff; color: #2563eb; border: 1px solid #bfdbfe; }
-    .msg.show    { display: block; }
-
+    /* ── Spinner ── */
     .spinner {
-      display: inline-block; width: 16px; height: 16px;
-      border: 2px solid rgba(255,255,255,0.4); border-top-color: white;
-      border-radius: 50%; animation: spin 0.7s linear infinite;
+      display: inline-block; width: 14px; height: 14px;
+      border: 2px solid rgba(255,255,255,.28); border-top-color: white;
+      border-radius: 50%; animation: spin .65s linear infinite;
       vertical-align: middle; margin-right: 6px;
+    }
+    .spinner.muted {
+      border-color: rgba(0,0,0,.1); border-top-color: var(--text-2);
     }
     @keyframes spin { to { transform: rotate(360deg); } }
 
+    .form-footer { text-align: center; margin-top: 12px; }
+
+    /* ── Forgot flow ── */
     .forgot-section { display: none; }
-    .forgot-section.active { display: block; }
+    .forgot-section.active { display: block; animation: fade-up .2s ease; }
 
-    .back-link {
-      display: flex; align-items: center; gap: 6px;
-      color: #64748b; font-size: 13px; cursor: pointer;
-      margin-bottom: 20px; background: none; border: none;
+    .back-btn {
+      display: inline-flex; align-items: center; gap: 5px;
+      color: var(--text-3); font-size: 13px; font-weight: 500;
+      cursor: pointer; margin-bottom: 18px; background: none;
+      font-family: 'Instrument Sans', sans-serif; padding: 0;
+      transition: color .14s;
     }
-    .back-link:hover { color: #3b82f6; }
+    .back-btn:hover { color: var(--accent); }
 
+    .section-title {
+      font-family: 'Instrument Serif', serif; font-style: italic;
+      font-size: 20px; font-weight: 400; color: var(--text); margin-bottom: 5px;
+    }
+    .section-desc { font-size: 13px; color: var(--text-3); margin-bottom: 18px; line-height: 1.5; }
+
+    /* OTP field */
     .otp-input {
-      font-size: 24px !important; text-align: center;
-      letter-spacing: 10px; font-weight: 700;
+      font-family: 'JetBrains Mono', monospace !important;
+      font-size: 22px !important; text-align: center;
+      letter-spacing: 11px; font-weight: 500;
     }
   </style>
 </head>
 <body>
+
+<!-- Background orbs -->
+<div class="orb orb-tl"></div>
+<div class="orb orb-br"></div>
+
 <div class="card">
+
   <div class="logo">
-    <h1>⏱️ Focus Tracker</h1>
-    <p>Track your time. Stay focused. Get things done.</p>
+    <div class="logo-icon">⏱</div>
+    <h1>Focus <strong>Tracker</strong></h1>
+    <p>Track your time. Stay focused. Ship more.</p>
   </div>
 
   <div id="msgBox" class="msg"></div>
 
-  <!-- MAIN AUTH -->
+  <!-- ══ MAIN AUTH ══ -->
   <div id="mainSection">
+
     <div class="tabs">
-      <!-- NO onclick= here — wired in auth.js to avoid CSP violation -->
       <button class="tab active" id="tabLogin">Sign In</button>
       <button class="tab"        id="tabSignup">Create Account</button>
     </div>
 
     <button class="btn-google" id="googleBtn">
       <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" alt="Google" />
-      Continue with Google
+      <span id="googleBtnLabel">Continue with Google</span>
     </button>
+    <div class="google-hint" id="googleHint"></div>
 
-    <div class="divider">or</div>
+    <div class="divider">or continue with email</div>
 
     <!-- LOGIN -->
     <div class="section active" id="loginSection">
@@ -169,8 +335,7 @@
         <input type="password" id="loginPassword" placeholder="Your password" autocomplete="current-password" />
       </div>
       <button class="btn-primary" id="loginBtn">Sign In</button>
-      <div style="text-align:center;margin-top:14px;">
-        <!-- NO onclick= — wired in auth.js -->
+      <div class="form-footer">
         <button class="btn-link" id="forgotLink">Forgot password?</button>
       </div>
     </div>
@@ -179,7 +344,7 @@
     <div class="section" id="signupSection">
       <div class="field">
         <label>Your Name</label>
-        <input type="text" id="signupName" placeholder="John Doe" autocomplete="name" />
+        <input type="text" id="signupName" placeholder="Jane Smith" autocomplete="name" />
       </div>
       <div class="field">
         <label>Email</label>
@@ -193,18 +358,16 @@
       </div>
       <button class="btn-primary" id="signupBtn">Create Account</button>
     </div>
+
   </div>
 
-  <!-- FORGOT PASSWORD -->
+  <!-- ══ FORGOT PASSWORD ══ -->
   <div id="forgotSection" class="forgot-section">
-    <!-- NO onclick= — wired in auth.js -->
-    <button class="back-link" id="backToLoginBtn">← Back to Sign In</button>
+    <button class="back-btn" id="backToLoginBtn">← Back to Sign In</button>
 
     <div id="forgotStep1">
-      <h3 style="margin-bottom:6px;color:#1e293b;">Reset Password</h3>
-      <p style="color:#64748b;font-size:13px;margin-bottom:20px;">
-        Enter your email and we'll send a reset code.
-      </p>
+      <div class="section-title">Reset Password</div>
+      <div class="section-desc">Enter your email and we'll send a 6-digit reset code.</div>
       <div class="field">
         <label>Email</label>
         <input type="email" id="forgotEmail" placeholder="you@example.com" />
@@ -213,24 +376,24 @@
     </div>
 
     <div id="forgotStep2" style="display:none;">
-      <h3 style="margin-bottom:6px;color:#1e293b;">Enter Reset Code</h3>
-      <p style="color:#64748b;font-size:13px;margin-bottom:20px;">
-        Check your email for a 6-digit code.
-      </p>
+      <div class="section-title">Check your inbox</div>
+      <div class="section-desc">Enter the 6-digit code we just sent you.</div>
       <div class="field">
         <label>6-Digit Code</label>
-        <input type="text" id="otpInput" class="otp-input" placeholder="000000" maxlength="6" inputmode="numeric" />
+        <input type="text" id="otpInput" class="otp-input"
+               placeholder="000000" maxlength="6" inputmode="numeric" />
       </div>
       <div class="field">
         <label>New Password</label>
         <input type="password" id="newPassword" placeholder="At least 8 characters" />
       </div>
       <button class="btn-primary" id="resetBtn">Reset Password</button>
-      <div style="text-align:center;margin-top:12px;">
+      <div class="form-footer">
         <button class="btn-link" id="resendBtn">Resend code</button>
       </div>
     </div>
   </div>
+
 </div>
 
 <script src="config.js"></script>

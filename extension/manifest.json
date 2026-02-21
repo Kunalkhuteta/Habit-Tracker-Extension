@@ -2,6 +2,7 @@
   "manifest_version": 3,
   "name": "Focus Tracker - Productivity & Time Management",
   "version": "2.0.0",
+  "key": "hljicpplhcbipcejhpmnnjjihomadjdd",
   "description": "Track your time, block distractions, and boost productivity with focus mode, daily reflections, and analytics.",
   "permissions": [
     "tabs",
@@ -10,13 +11,8 @@
     "notifications",
     "declarativeNetRequest",
     "declarativeNetRequestFeedback",
-    "alarms",
-    "identity"
+    "alarms"
   ],
-  "oauth2": {
-    "client_id": "368712052957-tphlrl0apqcic5ak08ibu3736pn3o3l0.apps.googleusercontent.com",
-    "scopes": ["openid", "email", "profile"]
-  },
   "host_permissions": [
     "<all_urls>"
   ],

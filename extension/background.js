@@ -1,16 +1,3 @@
-/* =========================================================
-   FOCUS TRACKER — background.js
-   
-   FIXED in this version:
-   ✅ removeRuleIds typo fixed (was "removeRuleIds" using undefined var,
-      now correctly uses the local `removeIds` const in both functions)
-   ✅ enableBlocking / disableBlocking are async + awaited properly
-   ✅ blockedSites synced from BOTH server AND chrome.storage.local
-   ✅ Category mappings loaded from /user-categories endpoint
-     (new schema with per-user categories including name/emoji/color)
-   ✅ SYNC_CATEGORIES message handler uses new /categories endpoint
-   ✅ removeIds is now consistently named throughout
-========================================================= */
 
 /* =========================================================
    KEEPALIVE
@@ -124,6 +111,33 @@ function getAuthHeaders() {
 }
 
 /* =========================================================
+   PER-USER STORAGE KEY HELPERS
+   
+   Every piece of user-specific data is stored under a key
+   suffixed with the userId extracted from the auth token.
+   This prevents data leaking between accounts on the same
+   browser profile when switching users.
+   
+   getUserId() — extracts userId from the token payload.
+     Token format: base64url(userId.expiry).sig
+   timeDataKey()     → "timeData_<userId>"
+   blockedSitesKey() → "blockedSites_<userId>"
+========================================================= */
+function getUserId() {
+  if (!authToken) return "default";
+  try {
+    const payload = authToken.split(".")[0];
+    const decoded = atob(payload.replace(/-/g, "+").replace(/_/g, "/"));
+    return decoded.split(".")[0]; // userId segment before the dot
+  } catch {
+    return authToken.slice(0, 16);
+  }
+}
+
+function timeDataKey()     { return `timeData_${getUserId()}`; }
+function blockedSitesKey() { return `blockedSites_${getUserId()}`; }
+
+/* =========================================================
    TIME TRACKING
 ========================================================= */
 function trackOneSecond() {
@@ -136,8 +150,9 @@ async function flushBufferToStorage() {
   const today    = getTodayKey();
   const captured = { ...bufferTime };
   bufferTime     = {};
+  const key      = timeDataKey(); // scoped per user
   const timeData = await new Promise((resolve) =>
-    chrome.storage.local.get(["timeData"], (res) => resolve(res.timeData || {}))
+    chrome.storage.local.get([key], (res) => resolve(res[key] || {}))
   );
   timeData[today] = timeData[today] || {};
   for (const domain in captured) {
@@ -146,7 +161,7 @@ async function flushBufferToStorage() {
     timeData[today][domain].time     += captured[domain];
     timeData[today][domain].category  = category;
   }
-  chrome.storage.local.set({ timeData });
+  chrome.storage.local.set({ [key]: timeData });
 }
 
 setInterval(trackOneSecond, 1000);
@@ -232,17 +247,16 @@ function notify(message) {
 }
 
 /* =========================================================
-   BLOCKED SITES — read merged from server + local storage
+   BLOCKED SITES — read from user-scoped local storage key
 ========================================================= */
 async function getBlockedSites() {
-  // Read from local storage (always available, even offline)
-  const local = await new Promise((resolve) => {
-    chrome.storage.local.get(["blockedSites"], (d) => {
+  const key = blockedSitesKey(); // scoped per user
+  return new Promise((resolve) => {
+    chrome.storage.local.get([key], (d) => {
       void chrome.runtime.lastError;
-      resolve(Array.isArray(d.blockedSites) ? d.blockedSites : []);
+      resolve(Array.isArray(d[key]) ? d[key] : []);
     });
   });
-  return local;
 }
 
 function isBlockedUrl(url, blockedSites) {
@@ -386,7 +400,7 @@ async function stopFocus(force) {
 
 /* =========================================================
    BACKGROUND SERVER SYNC FOR BLOCKED SITES
-   Pulls from server and merges with local cache.
+   Pulls from server and merges with user-scoped local cache.
    If focus is currently ON, refreshes rules to include new sites.
 ========================================================= */
 async function syncBlockedSitesInBackground() {
@@ -403,7 +417,8 @@ async function syncBlockedSitesInBackground() {
 
     const local  = await getBlockedSites();
     const merged = [...new Set([...serverSites, ...local])].sort();
-    await new Promise((r) => chrome.storage.local.set({ blockedSites: merged }, r));
+    // Store under the user-scoped key so accounts never share blocked lists
+    await new Promise((r) => chrome.storage.local.set({ [blockedSitesKey()]: merged }, r));
 
     // If focus is on, refresh rules to include newly synced sites
     if (focusModeOn) await enableBlocking();
@@ -520,14 +535,22 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       focusModeOn     = false;
       hardFocusActive = false;
       focusLockUntil  = 0;
+
+      // Capture scoped keys BEFORE clearing authToken
+      const bsKey  = blockedSitesKey();
+      const catKey = `catCustomizations_${getUserId()}`;
+
       authToken        = null;
       categoryMappings = {};
       updateBadge();
       await disableBlocking();
       chrome.storage.local.remove([
         "authToken", "lastValidated", "userInfo",
-        "blockedSites", "focusMode", "hardFocusActive", "focusLockUntil",
-        "catCustomizations", "_sw_heartbeat"
+        bsKey,   // user-scoped blocked sites
+        // timeData_<userId> is intentionally NOT removed so browsing
+        // history is preserved and visible again on next login
+        "focusMode", "hardFocusActive", "focusLockUntil",
+        catKey, "_sw_heartbeat"
       ]);
       sendResponse({ success: true });
       return;

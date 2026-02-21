@@ -30,8 +30,6 @@
       <h2>Settings</h2>
       <button class="close-btn" id="closeSettings">&#x2715;</button>
     </div>
-
-    <!-- Appearance -->
     <div class="setting-section">
       <div class="section-label">Appearance</div>
       <div class="setting-row">
@@ -56,8 +54,6 @@
         <button id="saveSettingsBtn" class="btn-primary">Save appearance</button>
       </div>
     </div>
-
-    <!-- Categories -->
     <div class="setting-section">
       <div class="section-label">Categories</div>
       <p style="font-size:13px;color:var(--text-3);margin-bottom:14px;line-height:1.5;">
@@ -67,8 +63,6 @@
       <ul class="cat-list" id="settingsCatList"></ul>
       <button class="add-cat-btn" id="addCatBtn">+ Add new category</button>
     </div>
-
-    <!-- Account -->
     <div class="setting-section">
       <div class="section-label">Account</div>
       <button class="btn-danger-ghost" id="logoutBtn">Sign out</button>
@@ -83,11 +77,9 @@
       <h2 id="catEditorTitle">Edit Category</h2>
       <button class="close-btn" id="closeCatEditor">&#x2715;</button>
     </div>
-
-    <!-- Emoji + Name row -->
     <div class="cat-editor-grid">
       <button class="cat-emoji-btn" id="emojiPickerBtn" title="Change emoji">
-        <span id="catEmojiDisplay">📁</span>
+        <span id="catEmojiDisplay">&#128193;</span>
       </button>
       <div class="cat-editor-fields">
         <input type="text" id="catNameInput" placeholder="Category name" maxlength="32"/>
@@ -100,14 +92,10 @@
         </div>
       </div>
     </div>
-
-    <!-- Emoji picker (hidden until btn clicked) -->
     <div class="emoji-picker-wrap" id="emojiPickerWrap" style="display:none;">
       <input type="text" class="emoji-search" id="emojiSearch" placeholder="Search emoji..."/>
       <div class="emoji-grid" id="emojiGrid"></div>
     </div>
-
-    <!-- Domain mappings -->
     <div style="margin-top:18px;">
       <div class="section-label" style="margin-bottom:8px;">Mapped Domains</div>
       <div class="domain-tags" id="domainTags"></div>
@@ -116,8 +104,6 @@
         <button id="addDomainBtn">Add</button>
       </div>
     </div>
-
-    <!-- Footer -->
     <div class="modal-footer">
       <button class="btn-ghost modal-footer-del" id="deleteCatBtn" style="color:#dc2626;border-color:rgba(220,38,38,.3);">Delete</button>
       <button class="btn-ghost" id="cancelCatEditor">Cancel</button>
@@ -131,7 +117,6 @@
 
   <!-- LEFT -->
   <div class="left-column">
-
     <div class="card focus-card">
       <div class="card-title">Focus Mode</div>
       <div class="focus-status">
@@ -139,9 +124,9 @@
         <span id="focusLabel">Off</span>
       </div>
       <div class="focus-btns">
-        <button id="startFocus">&#9654; Start — 25 min</button>
+        <button id="startFocus">&#9654; Start Focus</button>
         <button id="hardFocus">&#128274; Hard Focus (custom)</button>
-        <button id="stopFocus">&#9646; Stop</button>
+        <button id="stopFocus">&#9646; Stop Focus</button>
       </div>
     </div>
 
@@ -159,7 +144,7 @@
       <div class="card-title">Productivity Score</div>
       <div class="score-body">
         <div class="score-ring">
-          <div class="score-num" id="productivityScore">—</div>
+          <div class="score-num" id="productivityScore">&#8212;</div>
           <div class="score-denom">/100</div>
         </div>
         <div class="score-detail">
@@ -177,26 +162,27 @@
       </div>
       <ul class="blocked-list" id="blockedSitesList"></ul>
     </div>
-
   </div><!-- /left -->
 
   <!-- MIDDLE -->
   <div class="middle-column">
-
-    <!-- Dynamic stats cards — rendered by JS from user categories -->
     <div class="stats-grid" id="statsGrid">
       <div class="stat-card total">
         <span class="stat-emoji">&#128336;</span>
         <div class="stat-info">
-          <span class="stat-value" id="totalTime">—</span>
+          <span class="stat-value" id="totalTime">&#8212;</span>
           <span class="stat-label">Total</span>
         </div>
       </div>
-      <!-- category stat cards injected by JS -->
     </div>
 
+    <!-- CHART CARD — chart-header replaces plain card-title so we can
+         show the total-time badge inline without adding a separate element -->
     <div class="card chart-card">
-      <div class="card-title">Breakdown</div>
+      <div class="chart-header">
+        <div class="card-title">Breakdown</div>
+        <span class="chart-total-badge" id="chartTotalBadge" style="display:none;"></span>
+      </div>
       <div id="chartContainer"><canvas id="timeChart"></canvas></div>
     </div>
 
@@ -204,12 +190,10 @@
       <div class="card-title">Top Sites</div>
       <ul class="top-sites-list" id="topSites"></ul>
     </div>
-
   </div><!-- /middle -->
 
   <!-- RIGHT -->
   <div class="right-column">
-
     <div class="card">
       <div class="card-title">Daily Reflection</div>
       <p style="font-size:13px;color:var(--text-3);margin-bottom:14px;">A few minutes of reflection compounds over weeks.</p>
@@ -245,7 +229,6 @@
         <button class="btn-export" id="exportCsvBtn">CSV</button>
       </div>
     </div>
-
   </div><!-- /right -->
 
 </div><!-- /grid -->
