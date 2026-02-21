@@ -1,244 +1,238 @@
-# ⏱️ Focus Tracker & Sites Blocker Extension
+# Focus Tracker
 
-> A privacy-first Chrome extension that tracks where your time actually goes — and helps you take it back.
+> A full-stack productivity Chrome Extension that tracks browsing time, blocks distractions, and delivers analytics — with a Node.js/Express backend, MongoDB Atlas, and cross-browser Google OAuth 2.0.
 
-Focus Tracker runs silently in the background, recording every site you visit and how long you spend there. It categorises your browsing into **Learning**, **Development**, **Distraction**, and custom categories you define, then surfaces the data in a clean dashboard with a productivity score, top-sites chart, daily reflections, and focus-mode blocking. All data syncs to your own backend — no third-party analytics, no ads.
+![Manifest V3](https://img.shields.io/badge/Manifest-V3-4f46e5?style=flat-square)
+![Node.js](https://img.shields.io/badge/Node.js-Express-16a34a?style=flat-square)
+![MongoDB](https://img.shields.io/badge/MongoDB-Atlas-15803d?style=flat-square)
+![Google OAuth](https://img.shields.io/badge/Google-OAuth_2.0-dc2626?style=flat-square)
+![Deployed](https://img.shields.io/badge/Deployed-Render.com-7c3aed?style=flat-square)
+
+---
+
+## Overview
+
+Focus Tracker gives users deep visibility into their browsing habits. It tracks time per domain in real time, enforces distraction blocking via Chrome's `declarativeNetRequest` API, and renders analytics with productivity scoring on an interactive dashboard. A REST API backend on Render.com with MongoDB Atlas handles multi-user auth, category mappings, daily reflections, and theme preferences — all persisted across sessions and browser restarts.
+
+---
+
+## Tech Stack
+
+| Layer | Technologies |
+|---|---|
+| **Extension** | Chrome MV3, Service Worker, `declarativeNetRequest`, `chrome.storage`, `chrome.alarms` |
+| **Frontend** | HTML5, CSS3 (custom design system, CSS variables, dark/light mode), Vanilla JS ES2022 |
+| **Charts** | Chart.js — horizontal bar with custom `barLabels` plugin, per-DPR canvas sizing |
+| **Backend** | Node.js, Express.js, Mongoose ODM |
+| **Database** | MongoDB Atlas |
+| **Auth** | HMAC-SHA256 JWT (30-day), bcrypt (cost 12), Google OAuth 2.0 (web-popup, cross-browser) |
+| **Email** | Nodemailer + Gmail SMTP (verification + OTP password reset) |
+| **Deployment** | Render.com (server), MongoDB Atlas (DB), Google Cloud Console (OAuth) |
 
 ---
 
 ## Features
 
-| Feature | Description |
-|---|---|
-|  **Automatic time tracking** | Records time per domain continuously — no idle gaps, no missed sessions |
-|  **Live dashboard** | Real-time chart, category breakdown, top-sites list, and productivity score |
-|  **Focus mode** | Blocks distracting sites during work sessions; hard-lock mode prevents early stops |
-|  **Custom categories** | Create your own categories with custom name, emoji, colour, and domain list |
-|  **Daily reflections** | End-of-day journal with weekly summary view |
-|  **Auth** | Email/password signup + Google OAuth — JWT-based sessions |
-|  **Cloud sync** | All blocked sites, categories, and reflections sync to MongoDB via a Node.js backend |
-|  **Themes** | Light/dark mode + accent colour picker |
-|  **Export** | Download your data as JSON or CSV any time |
+### ⏱ Real-Time Time Tracking
+- Tracks active tab domain every second via background Service Worker
+- Per-user storage keys (`timeData_<userId>`) prevent cross-account data leaks
+- Time range views: Today, Yesterday, Last 7 Days, Last 30 Days
+- Export full history as **JSON** or **CSV**
+
+### 🔒 Focus & Distraction Blocking
+- **Standard Focus** — 25-minute Pomodoro timer with browser notifications
+- **Hard Focus** — user-defined duration; lock cannot be bypassed until timer expires
+- Site blocking via `declarativeNetRequest` dynamic rules (no content script needed)
+- Blocked sites synced between REST API and local storage with deduplication
+
+### 📊 Analytics Dashboard
+- Horizontal bar chart with fixed per-row height (fixes blurry first-render bug)
+- Custom `barLabels` plugin with `clip: false` + right-padding to show time + % inline
+- Productivity Score (0–100): Learning/Development weighted positive, Distractions negative
+- Top 8 sites ranked by time with animated progress bars
+- Custom categories with emoji, hex color, and mapped domains
+
+### 🔐 Authentication & Security
+- Email/password with **bcrypt** (cost 12) + email verification flow
+- Custom **HMAC-SHA256** tokens — no external JWT library required
+- **Google OAuth 2.0** via web-popup: works on Chrome, Edge, Firefox, Opera
+- Rate limiting: 20 req/15 min (auth routes), 100 req/min (API routes)
+- OTP password reset: 6-digit code, SHA-256 hashed, 10-minute expiry
+- CORS whitelisted for `chrome-extension://`, `moz-extension://`, `ms-browser-extension://`
+
+### 📓 Reflections & Preferences
+- Daily journal with three prompts (distractions, wins, improvements)
+- Weekly summary view with expand/collapse
+- Theme (light/dark) + accent colour (6 options) synced server ↔ all extension pages
 
 ---
 
-##  Project Structure
+## Architecture
+
+```
+┌─────────────────────────────────────────────────┐
+│              CHROME EXTENSION (MV3)              │
+│                                                  │
+│  popup.html/js ──→ background.js (Service Worker)│
+│       ↕                  ↕ chrome.storage.local  │
+│  dashboard.html/js    auth.html/js               │
+└──────────────────────┬──────────────────────────┘
+                       │ HTTPS REST API
+┌──────────────────────▼──────────────────────────┐
+│           EXPRESS SERVER (Render.com)            │
+│                                                  │
+│  /auth/*          → JWT + bcrypt + Google OAuth  │
+│  /blocked-sites/* → declarativeNetRequest sync   │
+│  /categories/*    → domain → category mappings   │
+│  /reflections/*   → daily journal entries        │
+│  /preferences/*   → theme + accent persistence   │
+└──────────────────────┬──────────────────────────┘
+                       │ Mongoose ODM
+┌──────────────────────▼──────────────────────────┐
+│                 MONGODB ATLAS                    │
+│  users · blockedsites · categorymappings         │
+│  reflections · preferences                       │
+└─────────────────────────────────────────────────┘
+```
+
+---
+
+## Project Structure
 
 ```
 focus-tracker/
 ├── extension/
-│   ├── manifest.json          # MV3 Chrome extension manifest
-│   ├── background.js          # Service worker — time tracking, focus mode, blocking
-│   ├── dashboard.html         # Main popup UI
-│   ├── dashboard.js           # Dashboard logic — charts, categories, sync
-│   ├── auth.html / auth.js    # Login & signup screens
-│   ├── blocked.html           # Redirect page shown when a site is blocked
-│   ├── config.js              # API_BASE URL constant
-│   └── icon.png
+│   ├── manifest.json         # MV3 manifest — permissions, service worker
+│   ├── background.js         # Service Worker: tracking, blocking, focus timer
+│   ├── dashboard.html/css/js # Analytics dashboard
+│   ├── auth.html/js          # Login/signup + Google OAuth popup
+│   ├── popup.html/js         # Browser action: quick stats + focus controls
+│   ├── blocked.html          # Redirect shown on blocked sites
+│   ├── config.js             # API_BASE constant (swap local ↔ prod)
+│   └── chart.min.js          # Chart.js (bundled, no CDN dependency)
+│
 └── server/
-    └── server.js              # Express + MongoDB backend (Node.js)
+    ├── server.js             # Express app: all routes, schemas, middleware
+    └── .env                  # Secrets (see Environment Variables below)
 ```
 
 ---
 
-##  Getting Started
+## Local Development Setup
 
-### 1. Clone the repo
-
-```bash
-git clone https://github.com/your-username/focus-tracker.git
-cd focus-tracker
-```
-
-### 2. Set up the backend
+### 1. Install server dependencies
 
 ```bash
-cd server
+git clone https://github.com/yourusername/focus-tracker.git
+cd focus-tracker/server
 npm install
 ```
 
-Create a `.env` file in the `server/` directory:
+### 2. Create `.env`
 
 ```env
 MONGODB_URI=mongodb+srv://<user>:<pass>@cluster.mongodb.net/focus-tracker
-JWT_SECRET=your-super-secret-key-here
-EMAIL_USER=you@gmail.com
+JWT_SECRET=your-secret-min-32-chars
+GOOGLE_CLIENT_ID=xxxx.apps.googleusercontent.com
+GOOGLE_CLIENT_SECRET=GOCSPX-xxxxxxxxxx
+EMAIL_USER=yourapp@gmail.com
 EMAIL_PASSWORD=your-gmail-app-password
-GOOGLE_CLIENT_ID=your-google-oauth-client-id
-PROD_URL=https://your-render-app.onrender.com
+PROD_URL=http://localhost:5000
 PORT=5000
-ALLOWED_ORIGINS=chrome-extension://your-extension-id,http://localhost:3000
 ```
 
-Start the server:
+### 3. Start the server
 
 ```bash
 node server.js
+# → 🚀 Server running on port 5000
 ```
 
-### 3. Configure the extension
-
-In `extension/config.js`, set your backend URL:
+### 4. Configure the extension
 
 ```js
-const API_BASE = "https://your-render-app.onrender.com";
+// extension/config.js
+const API_BASE = 'http://localhost:5000';
 ```
 
-### 4. Load the extension in Chrome
+### 5. Load in Chrome
 
 1. Open `chrome://extensions`
-2. Enable **Developer mode** (top right)
-3. Click **Load unpacked**
-4. Select the `extension/` folder
+2. Enable **Developer Mode**
+3. Click **Load unpacked** → select the `extension/` folder
+
+### 6. Google OAuth (Google Cloud Console)
+
+- Create a **Web Application** OAuth 2.0 credential (not "Chrome Extension" type)
+- Add Authorized redirect URI: `http://localhost:5000/auth/google/callback`
+- Verify config at: `http://localhost:5000/auth/google/debug`
 
 ---
 
-##  Backend API Reference
+## Production Deployment (Render.com)
 
-All protected routes require `Authorization: Bearer <token>` header.
-
-### Auth
-
-| Method | Endpoint | Description |
-|---|---|---|
-| `POST` | `/auth/signup` | Register with email + password |
-| `POST` | `/auth/login` | Login, returns JWT |
-| `POST` | `/auth/google` | Google OAuth login via access token |
-| `GET` | `/auth/verify-email` | Email verification link handler |
-| `POST` | `/auth/forgot-password` | Sends OTP reset code |
-| `POST` | `/auth/reset-password` | Validates OTP, sets new password |
-| `GET` | `/auth/me` | Returns current user info |
-| `POST` | `/auth/logout` | Logout (client-side token removal) |
-
-### Blocked Sites
-
-| Method | Endpoint | Description |
-|---|---|---|
-| `GET` | `/blocked-sites` | List all blocked domains |
-| `POST` | `/blocked-sites` | Add a domain to the blocklist |
-| `DELETE` | `/blocked-sites/:site` | Remove a domain |
-
-### Categories
-
-| Method | Endpoint | Description |
-|---|---|---|
-| `GET` | `/categories` | List all domain→category mappings |
-| `POST` | `/categories` | Map a domain to a category |
-| `DELETE` | `/categories/:domain` | Remove a domain mapping |
-
-Valid category values: `Learning`, `Development`, `Distraction`, `Other`, or any custom name string.
-
-### Reflections
-
-| Method | Endpoint | Description |
-|---|---|---|
-| `GET` | `/reflections` | List reflections (supports `?startDate=&endDate=`) |
-| `GET` | `/reflections/:date` | Get a single day's reflection |
-| `POST` | `/reflections` | Save or update a reflection |
-
-### Preferences
-
-| Method | Endpoint | Description |
-|---|---|---|
-| `GET` | `/preferences` | Get theme + accent colour |
-| `POST` | `/preferences` | Update theme + accent colour |
+1. Push `server/` to GitHub and connect to Render as a **Web Service**
+2. Add all `.env` variables in Render → **Environment**
+3. Set `PROD_URL = https://your-app.onrender.com` (no trailing slash)
+4. Add `https://your-app.onrender.com/auth/google/callback` to Google Cloud Console
+5. Update `config.js` to point to the production URL before packaging the extension
+6. Server self-pings every 14 minutes to prevent Render free-tier sleep
 
 ---
 
-##  How Time Tracking Works
+## API Reference
 
-The background service worker (`background.js`) tracks the active tab's domain every second with no idle pause — if your browser is open on a page, that page is counted. Data is buffered in memory and flushed to `chrome.storage.local` every 3 seconds to minimise write overhead.
-
-The MV3 service worker keepalive strategy combines two techniques to prevent Chrome from killing the worker:
-
-- **`chrome.alarms`** fires every ~24 seconds to resurrect the worker if Chrome already killed it
-- **Storage heartbeat** writes to `chrome.storage.local` every 20 seconds while alive, resetting Chrome's 30-second idle timer
-
-Category resolution works by checking the domain against server-synced mappings first, then falling back to keyword matching for common sites (e.g. `youtube.com` → Distraction, `github.com` → Development).
-
----
-
-## 🛡️ Focus Mode
-
-Focus mode uses Chrome's `declarativeNetRequest` API to redirect blocked domains to `blocked.html` in real time — no content scripts required.
-
-**Normal focus** — starts a 25-minute session, can be stopped at any time.
-
-**Hard focus** — locks the session for a user-specified duration. The stop button is disabled until the timer expires. Survives service worker restarts by persisting `focusLockUntil` to storage.
-
----
-
-##  Data Storage
-
-| Where | What |
-|---|---|
-| `chrome.storage.local` | `timeData` (per-day per-domain ms), `authToken`, `blockedSites` (local cache), `catCustomizations` (colours/emojis), focus state |
-| MongoDB (server) | Users, blocked sites, category mappings, reflections, preferences |
-
-Time data is stored under date keys (`YYYY-MM-DD`) so historical data is preserved and range queries (today / yesterday / 7 days / 30 days) work without extra server calls.
+| Method | Endpoint | Auth | Description |
+|---|---|---|---|
+| `POST` | `/auth/signup` | ✗ | Register with email + password; sends verification email |
+| `POST` | `/auth/login` | ✗ | Authenticate; returns HMAC-SHA256 JWT |
+| `POST` | `/auth/google` | ✗ | Sign in via Google access token (chrome.identity fallback) |
+| `GET` | `/auth/google/popup` | ✗ | Initiate cross-browser web OAuth popup |
+| `GET` | `/auth/google/callback` | ✗ | Exchange auth code; return JWT via postMessage |
+| `POST` | `/auth/forgot-password` | ✗ | Send 6-digit OTP (SHA-256 hashed, 10-min expiry) |
+| `POST` | `/auth/reset-password` | ✗ | Verify OTP + set new bcrypt password |
+| `GET` | `/auth/me` | ✓ | Validate token; return user profile |
+| `GET` | `/blocked-sites` | ✓ | List blocked domains |
+| `POST` | `/blocked-sites` | ✓ | Add a domain to block list |
+| `DELETE` | `/blocked-sites/:site` | ✓ | Remove a blocked domain |
+| `GET` | `/categories` | ✓ | Get all domain → category mappings |
+| `POST` | `/categories` | ✓ | Create / update a domain mapping |
+| `DELETE` | `/categories/:domain` | ✓ | Remove a domain mapping |
+| `GET` | `/reflections` | ✓ | Get reflections (supports `?startDate=&endDate=`) |
+| `POST` | `/reflections` | ✓ | Save daily reflection (upsert by date) |
+| `GET` | `/preferences` | ✓ | Get theme + accentColor |
+| `POST` | `/preferences` | ✓ | Save theme + accentColor |
 
 ---
 
-##  Deploying to Render (Free Tier)
-
-1. Push `server/server.js` to a GitHub repo
-2. Create a new **Web Service** on [render.com](https://render.com)
-3. Set the environment variables from the `.env` section above
-4. The server includes a built-in self-ping every 14 minutes to prevent Render's free-tier spindown
-
----
-
-##  Environment Variables
+## Environment Variables
 
 | Variable | Required | Description |
 |---|---|---|
 | `MONGODB_URI` | ✅ | MongoDB Atlas connection string |
-| `JWT_SECRET` | ✅ | Secret for signing auth tokens |
-| `EMAIL_USER` | ⚠️ optional | Gmail address for verification emails |
-| `EMAIL_PASSWORD` | ⚠️ optional | Gmail app password (not your login password) |
-| `GOOGLE_CLIENT_ID` | ⚠️ optional | Google OAuth 2.0 client ID |
-| `PROD_URL` | ⚠️ optional | Your deployed server URL (enables self-ping) |
-| `ALLOWED_ORIGINS` | ⚠️ optional | Comma-separated list of allowed CORS origins |
-| `PORT` | ⚠️ optional | Defaults to `5000` |
-
-> **Gmail note:** Use an [App Password](https://support.google.com/accounts/answer/185833), not your account password. Requires 2FA to be enabled on your Google account.
-
----
-
-##  Tech Stack
-
-**Extension**
-- Manifest V3 Chrome Extension
-- Vanilla JS — no build step required
-- Chart.js for the time breakdown chart
-- `chrome.declarativeNetRequest` for site blocking
-- `chrome.alarms` + `chrome.storage` for keepalive
-
-**Backend**
-- Node.js + Express
-- MongoDB + Mongoose
-- bcryptjs — password hashing
-- nodemailer — transactional email
-- google-auth-library — Google OAuth token verification
-- express-rate-limit — brute-force protection
+| `JWT_SECRET` | ✅ | HMAC-SHA256 signing secret — min 32 chars |
+| `GOOGLE_CLIENT_ID` | ✅ | Web Application OAuth client ID |
+| `GOOGLE_CLIENT_SECRET` | ✅ | OAuth client secret — required for code exchange |
+| `EMAIL_USER` | ✅ | Gmail address for transactional email |
+| `EMAIL_PASSWORD` | ✅ | Gmail App Password (requires 2FA enabled) |
+| `PROD_URL` | ✅ | Public server URL — no trailing slash |
+| `PORT` | ✗ | Server port (default: 5000) |
+| `ALLOWED_ORIGINS` | ✗ | Comma-separated CORS origins override |
 
 ---
 
-## 🤝 Contributing
+## Known Limitations
 
-1. Fork the repo
-2. Create a feature branch: `git checkout -b feature/your-idea`
-3. Commit your changes: `git commit -m 'Add your feature'`
-4. Push and open a Pull Request
-
-Please keep pull requests focused — one feature or fix per PR.
+- `chrome.identity` is Chrome-only; other browsers use the web popup OAuth flow
+- Render free tier may have ~15 s cold starts (self-ping mitigates but doesn't eliminate)
+- Service Workers are throttled by Chrome when the browser is minimised — tracking may drift slightly
+- Hard Focus has no OS-level enforcement; uninstalling the extension bypasses it
 
 ---
 
-##  License
+## License
 
-MIT — Kunal Khuteta
+MIT — see [LICENSE](LICENSE)
 
 ---
 
-<p align="center">Built to help you work with intention, not just activity.</p>
