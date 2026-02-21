@@ -635,7 +635,10 @@ app.post("/auth/forgot-password", async (req, res) => {
     user.resetToken       = otpHash;
     user.resetTokenExpiry = otpExpiry;
     await user.save();
-    await sendPasswordResetEmail(email, otp);
+    console.log("📨 Sending reset email to:", email);
+console.log("🔐 OTP:", otp);
+await sendPasswordResetEmail(email, otp);
+console.log("✅ Email sent successfully");
     res.json({ success: true, message: "If that email exists, a reset code was sent." });
   } catch (err) {
     console.error("Forgot password error:", err);
