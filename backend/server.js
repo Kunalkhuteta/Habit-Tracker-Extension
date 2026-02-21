@@ -1,5 +1,6 @@
 // server.js  —  Production-ready backend for Focus Tracker
-// Supports: Email+Password, Google OAuth, rate limiting, CORS, env vars
+// Supports: Email+Password, Google OAuth (web popup — works on ALL browsers),
+//           rate limiting, CORS, env vars
 
 import "dotenv/config";
 import express       from "express";
@@ -19,6 +20,7 @@ const {
   EMAIL_USER,
   EMAIL_PASSWORD,
   GOOGLE_CLIENT_ID,
+  GOOGLE_CLIENT_SECRET,   // ← required for web OAuth popup code exchange
   JWT_SECRET,
   ALLOWED_ORIGINS,
   PORT = 5000
@@ -34,6 +36,8 @@ app.use(cors({
     if (!origin) return callback(null, true);
     if (allowedOrigins.includes(origin)) return callback(null, true);
     if (origin.startsWith("chrome-extension://")) return callback(null, true);
+    if (origin.startsWith("moz-extension://"))    return callback(null, true); // Firefox
+    if (origin.startsWith("ms-browser-extension://")) return callback(null, true); // Edge legacy
     callback(new Error(`CORS: origin ${origin} not allowed`));
   },
   credentials: true
@@ -76,7 +80,14 @@ try {
 }
 
 // ==================== GOOGLE OAUTH ====================
-const googleClient = GOOGLE_CLIENT_ID ? new OAuth2Client(GOOGLE_CLIENT_ID) : null;
+// Uses Web Application client type — works on ALL browsers (Chrome, Edge, Firefox, Opera…)
+// Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET env vars (from Google Cloud Console)
+// Authorized redirect URI to register in Google Cloud Console:
+//   https://habit-tracker-extension.onrender.com/auth/google/callback
+//   http://localhost:5000/auth/google/callback   ← for local dev
+const googleClient = GOOGLE_CLIENT_ID
+  ? new OAuth2Client(GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET)
+  : null;
 
 // ==================== SCHEMAS ====================
 const userSchema = new mongoose.Schema({
@@ -103,7 +114,7 @@ blockedSiteSchema.index({ userId: 1, site: 1 }, { unique: true });
 const categoryMappingSchema = new mongoose.Schema({
   userId:   { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
   domain:   { type: String, required: true },
-  category: { type: String, required: true }, // any string — supports custom categories
+  category: { type: String, required: true },
   updatedAt:{ type: Date, default: Date.now }
 });
 categoryMappingSchema.index({ userId: 1, domain: 1 }, { unique: true });
@@ -119,10 +130,10 @@ const reflectionSchema = new mongoose.Schema({
 reflectionSchema.index({ userId: 1, date: 1 }, { unique: true });
 
 const preferencesSchema = new mongoose.Schema({
-  // sparse:true prevents E11000 dup key on null — without it every 2nd signup fails
   userId:     { type: mongoose.Schema.Types.ObjectId, ref: "User", unique: true, sparse: true, required: true },
   theme:      { type: String, enum: ["light", "dark"], default: "light" },
-  accentColor:{ type: String, enum: ["green", "blue", "purple", "red", "orange"], default: "blue" },
+  // FIX: added "indigo" to enum — dashboard uses it as the default accent
+  accentColor:{ type: String, enum: ["green", "blue", "purple", "red", "orange", "indigo"], default: "indigo" },
   updatedAt:  { type: Date, default: Date.now }
 });
 
@@ -133,14 +144,10 @@ const Reflection      = mongoose.model("Reflection",      reflectionSchema);
 const Preferences     = mongoose.model("Preferences",     preferencesSchema);
 
 // ==================== STARTUP INDEX REPAIR ====================
-// MongoDB never auto-drops indexes when schemas change. If preferences has an
-// old non-sparse userId_1 index, every 2nd signup hits E11000 { userId: null }.
-// This drops the bad index at startup and lets Mongoose recreate it correctly.
 async function repairIndexes() {
   try {
     const db = mongoose.connection.db;
 
-    // Helper: drop an index if it exists and doesn't have sparse:true
     async function dropIfNonSparse(collectionName, indexName) {
       try {
         const idxList = await db.collection(collectionName).indexes();
@@ -150,24 +157,18 @@ async function repairIndexes() {
           console.log(`✅ Dropped bad non-sparse ${collectionName}.${indexName}`);
         }
       } catch (e) {
-        // NamespaceNotFound = collection doesn't exist yet, that's fine
         if (e.codeName !== "NamespaceNotFound") {
           console.warn(`⚠️  ${collectionName}.${indexName} check:`, e.message);
         }
       }
     }
 
-    // Drop all known problematic non-sparse indexes
-    // users.email_1    — caused E11000 { email: null } on 2nd+ signup
-    // users.googleId_1 — caused E11000 { googleId: null } for email-only signups
-    // preferences.userId_1 — caused E11000 { userId: null } on 2nd+ signup
     await Promise.all([
       dropIfNonSparse("users", "email_1"),
       dropIfNonSparse("users", "googleId_1"),
       dropIfNonSparse("preferences", "userId_1"),
     ]);
 
-    // Recreate all indexes correctly (sparse:true is now in schema definitions)
     await Promise.all([
       User.syncIndexes(),
       BlockedSite.syncIndexes(),
@@ -182,7 +183,6 @@ async function repairIndexes() {
   }
 }
 
-// Run index repair after DB connects
 mongoose.connection.once("open", () => repairIndexes());
 
 // ==================== TOKEN UTILS ====================
@@ -220,6 +220,20 @@ function hashOTP(otp) {
   return crypto.createHash("sha256").update(otp).digest("hex");
 }
 
+// ==================== URL HELPER ====================
+// Derives the server's public base URL reliably.
+// Prevents the "undefined/auth/google/callback" bug when
+// PROD_URL env var is not set on Render.
+function getServerBase(req) {
+  if (process.env.PROD_URL && !process.env.PROD_URL.includes("undefined")) {
+    return process.env.PROD_URL.replace(/\/+$/, "");
+  }
+  // Fall back to deriving from the incoming request headers
+  const proto = req.headers["x-forwarded-proto"] || req.protocol || "https";
+  const host  = req.headers["x-forwarded-host"]  || req.headers.host || "";
+  return `${proto}://${host}`;
+}
+
 // ==================== EMAIL HELPERS ====================
 const PROD_URL = process.env.PROD_URL || `http://localhost:${PORT}`;
 
@@ -232,9 +246,9 @@ async function sendVerificationEmail(email, token) {
     subject: "Verify your Focus Tracker account",
     html: `
       <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;">
-        <h2 style="color:#3b82f6;">⏱️ Welcome to Focus Tracker!</h2>
+        <h2 style="color:#4f46e5;">⏱️ Welcome to Focus Tracker!</h2>
         <p>Click the button below to verify your email and activate your account.</p>
-        <a href="${link}" style="display:inline-block;padding:14px 28px;background:#3b82f6;color:white;border-radius:8px;text-decoration:none;font-weight:600;margin:16px 0;">
+        <a href="${link}" style="display:inline-block;padding:14px 28px;background:#4f46e5;color:white;border-radius:8px;text-decoration:none;font-weight:600;margin:16px 0;">
           Verify My Email
         </a>
         <p style="color:#64748b;font-size:13px;">Link expires in 24 hours.</p>
@@ -251,7 +265,7 @@ async function sendPasswordResetEmail(email, otp) {
     subject: "Reset your Focus Tracker password",
     html: `
       <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;">
-        <h2 style="color:#3b82f6;">⏱️ Password Reset</h2>
+        <h2 style="color:#4f46e5;">⏱️ Password Reset</h2>
         <p>Your one-time code to reset your password:</p>
         <h1 style="background:#f1f5f9;padding:20px;text-align:center;letter-spacing:8px;color:#1e293b;border-radius:8px;">
           ${otp}
@@ -286,8 +300,57 @@ async function authenticateToken(req, res, next) {
 async function ensurePreferences(userId) {
   const existing = await Preferences.findOne({ userId });
   if (!existing) {
-    await Preferences.create({ userId, theme: "light", accentColor: "blue" });
+    await Preferences.create({ userId, theme: "light", accentColor: "indigo" });
   }
+}
+
+// ==================== GOOGLE OAUTH HELPERS ====================
+// Tiny HTML page that closes the popup and sends the result
+// back to the extension window via postMessage
+function closePopupHTML(token, user, error) {
+  const payload = token
+    ? JSON.stringify({ type: "FOCUS_TRACKER_AUTH", token, user })
+    : JSON.stringify({ type: "FOCUS_TRACKER_AUTH", error: error || "Unknown error" });
+
+  return `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <title>Signing in to Focus Tracker…</title>
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0;}
+    body{font-family:system-ui,sans-serif;display:flex;align-items:center;
+         justify-content:center;height:100vh;background:#f5f3ef;color:#57534e;}
+    .box{text-align:center;}
+    .icon{font-size:40px;margin-bottom:12px;}
+    p{font-size:14px;color:#78716c;margin-top:8px;}
+    small{font-size:12px;color:#a8a29e;}
+    .spinner{width:36px;height:36px;border:3px solid #e0dbd4;
+             border-top-color:#4f46e5;border-radius:50%;
+             animation:spin .7s linear infinite;margin:0 auto 14px;}
+    @keyframes spin{to{transform:rotate(360deg);}}
+  </style>
+</head>
+<body>
+  <div class="box">
+    ${token
+      ? `<div class="spinner"></div><p>Signing you in…</p>`
+      : `<div class="icon">⚠️</div><p>${error || "Sign-in failed"}</p><p><small>You can close this window and try again.</small></p>`
+    }
+  </div>
+  <script>
+    (function(){
+      try {
+        if (window.opener && !window.opener.closed) {
+          window.opener.postMessage(${payload}, "*");
+        }
+      } catch(e){ console.error("postMessage failed:", e); }
+      // Give the opener 300ms to receive the message, then close
+      setTimeout(function(){ window.close(); }, 300);
+    })();
+  </` + `script>
+</body>
+</html>`;
 }
 
 // ==================== AUTH ROUTES ====================
@@ -378,6 +441,8 @@ app.post("/auth/login", async (req, res) => {
   }
 });
 
+// POST /auth/google — kept for backward compatibility (chrome.identity flow)
+// Accepts an accessToken from chrome.identity.getAuthToken
 app.post("/auth/google", async (req, res) => {
   const { idToken, accessToken } = req.body;
   if (!googleClient)
@@ -426,6 +491,155 @@ app.post("/auth/google", async (req, res) => {
   }
 });
 
+// ==================== GOOGLE WEB OAUTH POPUP FLOW ====================
+// Works on ALL browsers — Chrome, Edge, Firefox, Opera, Brave, Safari…
+// No chrome.identity needed. Just a standard browser popup + redirect.
+//
+// SETUP REQUIRED:
+//   1. Google Cloud Console → Credentials → Web Application OAuth client
+//   2. Add these Authorized redirect URIs:
+//        https://habit-tracker-extension.onrender.com/auth/google/callback
+//        http://localhost:5000/auth/google/callback
+//   3. Set env vars on Render:
+//        GOOGLE_CLIENT_ID = <your web client id>
+//        PROD_URL = https://habit-tracker-extension.onrender.com
+
+// GET /auth/google/popup — auth.js opens this URL in a small popup window.
+// We immediately redirect to Google's OAuth consent screen.
+app.get("/auth/google/popup", (req, res) => {
+  if (!googleClient || !GOOGLE_CLIENT_ID) {
+    return res.status(501).send(closePopupHTML(null, null,
+      "Google sign-in is not configured on this server. Set GOOGLE_CLIENT_ID env var."));
+  }
+
+  const base        = getServerBase(req);
+  const callbackUri = `${base}/auth/google/callback`;
+
+  console.log(`[Google popup] redirect_uri = ${callbackUri}`);
+
+  // We encode the callbackUri into `state` so the /callback handler
+  // uses the EXACT same redirect_uri for the token exchange.
+  // Google requires these to match byte-for-byte.
+  const state = Buffer.from(JSON.stringify({ cb: callbackUri })).toString("base64url");
+
+  const params = new URLSearchParams({
+    client_id:     GOOGLE_CLIENT_ID,
+    redirect_uri:  callbackUri,
+    response_type: "code",
+    scope:         "openid email profile",
+    access_type:   "offline",
+    prompt:        "select_account",
+    state,
+  });
+
+  res.redirect(`https://accounts.google.com/o/oauth2/v2/auth?${params}`);
+});
+
+// GET /auth/google/callback — Google sends the user here after approval.
+// We exchange the code for tokens, find/create the user, then close
+// the popup and send the JWT back to the extension via postMessage.
+app.get("/auth/google/callback", async (req, res) => {
+  const { code, error, state } = req.query;
+
+  if (error || !code) {
+    const msg = error === "access_denied"
+      ? "Google sign-in was cancelled"
+      : (error || "Google sign-in failed — no authorisation code received");
+    console.warn(`[Google callback] error: ${msg}`);
+    return res.send(closePopupHTML(null, null, msg));
+  }
+
+  if (!googleClient) {
+    return res.send(closePopupHTML(null, null, "Google OAuth is not configured on this server"));
+  }
+
+  try {
+    // Recover the exact redirect_uri that /popup used from the state param.
+    // Falls back to deriving it if state is missing (e.g. direct browser visit).
+    let callbackUri;
+    try {
+      const decoded = JSON.parse(Buffer.from(state || "", "base64url").toString());
+      callbackUri   = decoded.cb;
+    } catch {}
+    if (!callbackUri) {
+      callbackUri = `${getServerBase(req)}/auth/google/callback`;
+    }
+
+    console.log(`[Google callback] exchanging code with redirect_uri = ${callbackUri}`);
+
+    // Exchange authorisation code for id_token + access_token
+    // redirect_uri must be byte-for-byte identical to what was sent in /popup
+    const { tokens } = await googleClient.getToken({ code, redirect_uri: callbackUri });
+
+    if (!tokens.id_token) throw new Error("No id_token in Google response");
+
+    // Verify id_token and extract user profile
+    const ticket = await googleClient.verifyIdToken({
+      idToken:  tokens.id_token,
+      audience: GOOGLE_CLIENT_ID,
+    });
+    const p = ticket.getPayload();
+    const { sub: googleId, email, name, picture: avatar } = p;
+
+    if (!email) throw new Error("Google did not return an email address");
+
+    // Find existing user or create a new one
+    let user = await User.findOne({ $or: [{ googleId }, { email: email.toLowerCase() }] });
+    if (!user) {
+      user = await User.create({
+        email:       email.toLowerCase(),
+        googleId,
+        displayName: name || email.split("@")[0],
+        avatar:      avatar || "",
+        authMethod:  "google",
+        isVerified:  true,
+      });
+      await ensurePreferences(user._id);
+      console.log(`[Google callback] New user created: ${email}`);
+    } else {
+      // Link Google ID to existing email/password account if needed
+      if (!user.googleId) {
+        user.googleId   = googleId;
+        user.isVerified = true;
+        user.authMethod = user.passwordHash ? "both" : "google";
+      }
+      user.lastLoginAt = new Date();
+      user.avatar      = avatar || user.avatar;
+      await user.save();
+      console.log(`[Google callback] Existing user signed in: ${email}`);
+    }
+
+    const token = createAuthToken(user._id.toString());
+
+    res.send(closePopupHTML(token, {
+      email:      user.email,
+      name:       user.displayName,
+      avatar:     user.avatar,
+      isVerified: true,
+    }));
+  } catch (err) {
+    console.error("❌ Google callback error:", err.message);
+    res.send(closePopupHTML(null, null,
+      "Google sign-in failed. Please close this window and try again."));
+  }
+});
+
+// GET /auth/google/debug — visit in browser to verify config
+// Remove or restrict this route before going public
+app.get("/auth/google/debug", (req, res) => {
+  const base = getServerBase(req);
+  res.json({
+    GOOGLE_CLIENT_ID_set:     !!GOOGLE_CLIENT_ID,
+    GOOGLE_CLIENT_ID_preview: GOOGLE_CLIENT_ID ? `${GOOGLE_CLIENT_ID.slice(0, 14)}…` : "NOT SET",
+    GOOGLE_CLIENT_SECRET_set: !!GOOGLE_CLIENT_SECRET,
+    PROD_URL_env:             process.env.PROD_URL || "NOT SET (will derive from request)",
+    derived_base_url:         base,
+    redirect_uri_will_be:     `${base}/auth/google/callback`,
+    action: "Add the redirect_uri_will_be value to Google Cloud Console → Authorized redirect URIs",
+  });
+});
+
+// ==================== OTHER AUTH ROUTES ====================
 app.post("/auth/forgot-password", async (req, res) => {
   const { email } = req.body;
   if (!email) return res.status(400).json({ error: "Email required" });
@@ -543,7 +757,6 @@ app.delete("/blocked-sites/:site", authenticateToken, async (req, res) => {
 });
 
 // ==================== CATEGORIES ====================
-// GET all category mappings for this user
 app.get("/categories", authenticateToken, async (req, res) => {
   try {
     const mappings = await CategoryMapping.find(
@@ -557,7 +770,6 @@ app.get("/categories", authenticateToken, async (req, res) => {
   }
 });
 
-// POST — create or update a domain→category mapping
 app.post("/categories", authenticateToken, async (req, res) => {
   const { domain, category } = req.body;
   if (!domain || !category)
@@ -580,25 +792,19 @@ app.post("/categories", authenticateToken, async (req, res) => {
     console.log(`✅ Category saved: ${normalized} → ${category}`);
     res.json({ success: true, domain: normalized, category });
   } catch (err) {
-    if (err.code === 11000) {
-      // Race condition duplicate — return success, data is the same
-      return res.json({ success: true, domain: normalized, category });
-    }
+    if (err.code === 11000) return res.json({ success: true, domain: normalized, category });
     console.error("POST /categories error:", err);
     res.status(500).json({ error: "Failed to save category" });
   }
 });
 
-// DELETE a specific domain mapping
-// FIXED: decode domain from URL params correctly
 app.delete("/categories/:domain", authenticateToken, async (req, res) => {
-  const domain = decodeURIComponent(req.params.domain);
+  const domain     = decodeURIComponent(req.params.domain);
   const normalized = normalizeDomain(domain);
   console.log(`DELETE /categories/${normalized} for user ${req.userId}`);
   try {
     const result = await CategoryMapping.deleteOne({ userId: req.userId, domain: normalized });
     if (result.deletedCount === 0) {
-      // Try without normalization (stored value may differ)
       await CategoryMapping.deleteOne({ userId: req.userId, domain: domain });
     }
     res.json({ success: true });
@@ -653,7 +859,7 @@ app.post("/reflections", authenticateToken, async (req, res) => {
 app.get("/preferences", authenticateToken, async (req, res) => {
   try {
     let prefs = await Preferences.findOne({ userId: req.userId });
-    if (!prefs) prefs = await Preferences.create({ userId: req.userId, theme: "light", accentColor: "blue" });
+    if (!prefs) prefs = await Preferences.create({ userId: req.userId, theme: "light", accentColor: "indigo" });
     res.json(prefs);
   } catch (err) {
     console.error("GET /preferences error:", err);
@@ -666,7 +872,7 @@ app.post("/preferences", authenticateToken, async (req, res) => {
   try {
     await Preferences.updateOne(
       { userId: req.userId },
-      { $set: { theme: theme || "light", accentColor: accentColor || "blue", updatedAt: new Date() } },
+      { $set: { theme: theme || "light", accentColor: accentColor || "indigo", updatedAt: new Date() } },
       { upsert: true }
     );
     res.json({ success: true });
@@ -679,7 +885,11 @@ app.post("/preferences", authenticateToken, async (req, res) => {
 
 // ==================== HEALTH CHECK ====================
 app.get("/health", (req, res) => {
-  res.json({ status: "ok", timestamp: new Date().toISOString() });
+  res.json({
+    status:    "ok",
+    timestamp: new Date().toISOString(),
+    google:    GOOGLE_CLIENT_ID ? "configured" : "not configured",
+  });
 });
 
 // ==================== RENDER FREE TIER KEEP-ALIVE ====================
@@ -698,7 +908,11 @@ function startSelfPing(url) {
 // ==================== START ====================
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
-  console.log(`   Auth: email/password ${GOOGLE_CLIENT_ID ? "+ Google OAuth ✅" : "(add GOOGLE_CLIENT_ID for Google login)"}`);
+  console.log(`   Auth: email/password ${GOOGLE_CLIENT_ID ? "+ Google OAuth (web popup) ✅" : "(set GOOGLE_CLIENT_ID for Google login)"}`);
+  if (GOOGLE_CLIENT_ID && !GOOGLE_CLIENT_SECRET) {
+    console.warn("   ⚠️  GOOGLE_CLIENT_SECRET not set — Google OAuth code exchange will fail!");
+  }
   console.log(`   DB: ${MONGODB_URI ? "MongoDB Atlas ✅" : "localhost (set MONGODB_URI for production)"}`);
+  console.log(`   PROD_URL: ${process.env.PROD_URL || "(not set — will derive from request headers)"}`);
   startSelfPing(process.env.PROD_URL);
 });
