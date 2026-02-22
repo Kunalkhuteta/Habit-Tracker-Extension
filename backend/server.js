@@ -1,164 +1,213 @@
-// server.js  —  Production-ready backend for Focus Tracker
-// Supports: Email+Password, Google OAuth (web popup — works on ALL browsers),
-//           rate limiting, CORS, env vars
+// server.js — Focus Tracker backend
+// Production-ready: Email+Password, Google OAuth (web popup, all browsers),
+// JWT auth, rate limiting, security headers, input validation
 
 import "dotenv/config";
-import express       from "express";
-import mongoose      from "mongoose";
-import cors          from "cors";
-import crypto        from "crypto";
-import nodemailer    from "nodemailer";
-import bcrypt        from "bcryptjs";
-import rateLimit     from "express-rate-limit";
+import express         from "express";
+import mongoose        from "mongoose";
+import cors            from "cors";
+import crypto          from "crypto";
+import nodemailer      from "nodemailer";
+import bcrypt          from "bcryptjs";
+import rateLimit       from "express-rate-limit";
 import { OAuth2Client } from "google-auth-library";
 
-const app = express();
-app.set("trust proxy", 1);
-
+// ─────────────────────────────────────────────
+// ENV VALIDATION — crash fast on missing secrets
+// ─────────────────────────────────────────────
 const {
   MONGODB_URI,
   EMAIL_USER,
   EMAIL_PASSWORD,
   GOOGLE_CLIENT_ID,
-  GOOGLE_CLIENT_SECRET,   // ← required for web OAuth popup code exchange
+  GOOGLE_CLIENT_SECRET,
   JWT_SECRET,
   ALLOWED_ORIGINS,
-  PORT = 5000
+  PROD_URL,
+  PORT = 5000,
 } = process.env;
 
-// ==================== CORS ====================
+if (!JWT_SECRET) {
+  console.error("❌ FATAL: JWT_SECRET is not set.");
+  console.error('   Run: node -e "console.log(require(\'crypto\').randomBytes(64).toString(\'hex\'))"');
+  process.exit(1);
+}
+
+// PROD_URL must be set in production so Google OAuth redirect_uri is deterministic
+if (process.env.NODE_ENV === "production" && !PROD_URL) {
+  console.warn("⚠️  PROD_URL not set — Google OAuth may use wrong redirect_uri on Render.");
+}
+
+// ─────────────────────────────────────────────
+// EXPRESS SETUP
+// ─────────────────────────────────────────────
+const app = express();
+app.set("trust proxy", 1); // Required on Render/Heroku — trusts X-Forwarded-* headers
+
+// ─────────────────────────────────────────────
+// CORS
+// ─────────────────────────────────────────────
+const defaultOrigins = [
+  "http://localhost:5000",
+  "http://localhost:3000",
+  "https://habit-tracker-extension.onrender.com",
+];
 const allowedOrigins = ALLOWED_ORIGINS
   ? ALLOWED_ORIGINS.split(",").map(s => s.trim())
-  : ["http://localhost:5000", "http://localhost:3000", "https://habit-tracker-extension.onrender.com"];
+  : defaultOrigins;
 
 app.use(cors({
-  origin: (origin, callback) => {
-    if (!origin) return callback(null, true);
-    if (allowedOrigins.includes(origin)) return callback(null, true);
-    if (origin.startsWith("chrome-extension://")) return callback(null, true);
-    if (origin.startsWith("moz-extension://"))    return callback(null, true); // Firefox
-    if (origin.startsWith("ms-browser-extension://")) return callback(null, true); // Edge legacy
-    callback(new Error(`CORS: origin ${origin} not allowed`));
+  origin(origin, cb) {
+    // No origin = same-origin request or server-to-server — allow
+    if (!origin) return cb(null, true);
+    if (allowedOrigins.includes(origin)) return cb(null, true);
+    // Browser extensions have their own protocol origins — always allow
+    if (
+      origin.startsWith("chrome-extension://") ||
+      origin.startsWith("moz-extension://") ||
+      origin.startsWith("ms-browser-extension://")
+    ) return cb(null, true);
+    cb(new Error(`CORS: origin ${origin} not allowed`));
   },
-  credentials: true
+  credentials: true,
 }));
 
 app.use(express.json({ limit: "10kb" }));
 
-// ==================== SECURITY HEADERS ====================
+// ─────────────────────────────────────────────
+// SECURITY HEADERS
+// ─────────────────────────────────────────────
 app.use((req, res, next) => {
-  res.setHeader("X-Content-Type-Options",  "nosniff");
-  res.setHeader("X-Frame-Options",          "DENY");
-  res.setHeader("X-XSS-Protection",         "0");           // modern browsers use CSP instead
-  res.setHeader("Referrer-Policy",          "no-referrer");
-  res.setHeader("Permissions-Policy",       "geolocation=(), camera=(), microphone=()");
-  res.removeHeader("X-Powered-By");                         // don't advertise Express
+  res.removeHeader("X-Powered-By");
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("X-Frame-Options", "DENY");
+  res.setHeader("X-XSS-Protection", "0");
+  res.setHeader("Referrer-Policy", "no-referrer");
+  res.setHeader("Permissions-Policy", "geolocation=(), camera=(), microphone=()");
   next();
 });
 
-// ==================== RATE LIMITING ====================
+// ─────────────────────────────────────────────
+// RATE LIMITING
+// ─────────────────────────────────────────────
+// Separate limiters per sensitive route so one route can't
+// exhaust the budget of another (e.g. login spam blocking forgot-password)
+const strictLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, max: 10,
+  message: { error: "Too many attempts. Please wait 15 minutes." },
+  standardHeaders: true, legacyHeaders: false,
+  keyGenerator: (req) => req.ip,
+});
 const authLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, max: 20,
-  message: { error: "Too many attempts. Please try again in 15 minutes." },
-  standardHeaders: true, legacyHeaders: false
+  windowMs: 15 * 60 * 1000, max: 25,
+  message: { error: "Too many attempts. Please wait 15 minutes." },
+  standardHeaders: true, legacyHeaders: false,
 });
 const apiLimiter = rateLimit({
-  windowMs: 60 * 1000, max: 100,
-  message: { error: "Too many requests. Please slow down." }
+  windowMs: 60 * 1000, max: 120,
+  message: { error: "Too many requests. Please slow down." },
 });
-app.use("/auth", authLimiter);
-app.use("/", apiLimiter);
 
-// ==================== MONGODB ====================
-mongoose.connect(MONGODB_URI || "mongodb://localhost:27017/focus-tracker")
+// Apply per-route: tightest limits on password/OTP routes
+app.use("/auth/forgot-password", strictLimiter);
+app.use("/auth/reset-password",  strictLimiter);
+app.use("/auth/signup",          authLimiter);
+app.use("/auth/login",           authLimiter);
+app.use("/auth",                 authLimiter); // catch-all for remaining /auth routes
+app.use("/",                     apiLimiter);
+
+// ─────────────────────────────────────────────
+// MONGODB
+// ─────────────────────────────────────────────
+mongoose
+  .connect(MONGODB_URI || "mongodb://localhost:27017/focus-tracker")
   .then(() => console.log("✅ MongoDB connected"))
-  .catch(err => console.error("❌ MongoDB error:", err));
+  .catch(err => console.error("❌ MongoDB error:", err.message));
 
-// ==================== EMAIL ====================
+// ─────────────────────────────────────────────
+// EMAIL (Gmail SMTP)
+// ─────────────────────────────────────────────
 let transporter = null;
-try {
-  if (EMAIL_USER && EMAIL_PASSWORD) {
-    const cleanPass = EMAIL_PASSWORD.replace(/\s/g, "");
-    console.log(`📧 Email setup — user: ${EMAIL_USER} | pass length: ${cleanPass.length} chars`);
-    transporter = nodemailer.createTransport({
-      host: "smtp.gmail.com",
-      port: 465,
-      secure: true,
-      auth: { user: EMAIL_USER, pass: cleanPass },
-    });
-    // Verify at startup so you see auth errors immediately in logs
-    transporter.verify((err, success) => {
-      if (err) {
-        console.error("❌ Gmail SMTP verify FAILED at startup:", err.message);
-        console.error("   Code:", err.code, "| Response:", err.response);
-        console.error("   Fix: myaccount.google.com → Security → 2-Step Verification → App Passwords");
-      } else {
-        console.log("✅ Gmail SMTP verified — ready to send");
-      }
-    });
-  } else {
-    console.warn("⚠️  EMAIL_USER or EMAIL_PASSWORD not set — emails disabled");
-  }
-} catch (err) {
-  console.error("❌ Email setup failed:", err.message);
+if (EMAIL_USER && EMAIL_PASSWORD) {
+  const cleanPass = EMAIL_PASSWORD.replace(/\s/g, "");
+  transporter = nodemailer.createTransport({
+    host: "smtp.gmail.com",
+    port: 465,
+    secure: true,
+    auth: { user: EMAIL_USER, pass: cleanPass },
+    pool: true,          // reuse connections — faster & avoids repeated handshakes
+    maxConnections: 3,
+  });
+  transporter.verify((err) => {
+    if (err) {
+      console.error("❌ Gmail SMTP verify FAILED:", err.message);
+      console.error("   → Go to myaccount.google.com → Security → App Passwords");
+    } else {
+      console.log("✅ Gmail SMTP ready");
+    }
+  });
+} else {
+  console.warn("⚠️  EMAIL_USER / EMAIL_PASSWORD not set — email features disabled");
 }
 
-// ==================== GOOGLE OAUTH ====================
-// Uses Web Application client type — works on ALL browsers (Chrome, Edge, Firefox, Opera…)
-// Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET env vars (from Google Cloud Console)
-// Authorized redirect URI to register in Google Cloud Console:
-//   https://habit-tracker-extension.onrender.com/auth/google/callback
-//   http://localhost:5000/auth/google/callback   ← for local dev
-const googleClient = GOOGLE_CLIENT_ID
+// ─────────────────────────────────────────────
+// GOOGLE OAUTH CLIENT
+// ─────────────────────────────────────────────
+const googleClient = (GOOGLE_CLIENT_ID && GOOGLE_CLIENT_SECRET)
   ? new OAuth2Client(GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET)
   : null;
 
-// ==================== SCHEMAS ====================
+if (GOOGLE_CLIENT_ID && !GOOGLE_CLIENT_SECRET) {
+  console.warn("⚠️  GOOGLE_CLIENT_SECRET not set — Google OAuth will fail at code exchange");
+}
+
+// ─────────────────────────────────────────────
+// SCHEMAS & MODELS
+// ─────────────────────────────────────────────
 const userSchema = new mongoose.Schema({
-  email:           { type: String, unique: true, sparse: true, lowercase: true },
-  passwordHash:    { type: String, default: null },
-  googleId:        { type: String, unique: true, sparse: true },
-  displayName:     { type: String, default: "" },
-  avatar:          { type: String, default: "" },
-  authMethod:      { type: String, enum: ["email", "google", "both"], default: "email" },
-  isVerified:      { type: Boolean, default: false },
-  verifyToken:     { type: String, default: null },
-  resetToken:      { type: String, default: null },
-  resetTokenExpiry:{ type: Date,   default: null },
-  createdAt:       { type: Date,   default: Date.now },
-  lastLoginAt:     { type: Date,   default: Date.now }
+  email:            { type: String, unique: true, sparse: true, lowercase: true, trim: true },
+  passwordHash:     { type: String, default: null },
+  googleId:         { type: String, unique: true, sparse: true },
+  displayName:      { type: String, default: "", maxlength: 64 },
+  avatar:           { type: String, default: "" },
+  authMethod:       { type: String, enum: ["email", "google", "both"], default: "email" },
+  isVerified:       { type: Boolean, default: false },
+  verifyToken:      { type: String, default: null, select: false },
+  resetToken:       { type: String, default: null, select: false },
+  resetTokenExpiry: { type: Date,   default: null, select: false },
+  createdAt:        { type: Date,   default: Date.now },
+  lastLoginAt:      { type: Date,   default: Date.now },
 });
 
 const blockedSiteSchema = new mongoose.Schema({
   userId: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
-  site:   { type: String, required: true }
+  site:   { type: String, required: true, maxlength: 253 },
 });
 blockedSiteSchema.index({ userId: 1, site: 1 }, { unique: true });
 
 const categoryMappingSchema = new mongoose.Schema({
-  userId:   { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
-  domain:   { type: String, required: true },
-  category: { type: String, required: true },
-  updatedAt:{ type: Date, default: Date.now }
+  userId:    { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
+  domain:    { type: String, required: true, maxlength: 253 },
+  category:  { type: String, required: true },
+  updatedAt: { type: Date, default: Date.now },
 });
 categoryMappingSchema.index({ userId: 1, domain: 1 }, { unique: true });
 
 const reflectionSchema = new mongoose.Schema({
-  userId:      { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
-  date:        { type: String, required: true },
-  distractions:{ type: String, default: "" },
-  wentWell:    { type: String, default: "" },
-  improvements:{ type: String, default: "" },
-  createdAt:   { type: Date, default: Date.now }
+  userId:       { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
+  date:         { type: String, required: true, maxlength: 10 },
+  distractions: { type: String, default: "", maxlength: 2000 },
+  wentWell:     { type: String, default: "", maxlength: 2000 },
+  improvements: { type: String, default: "", maxlength: 2000 },
+  createdAt:    { type: Date, default: Date.now },
 });
 reflectionSchema.index({ userId: 1, date: 1 }, { unique: true });
 
 const preferencesSchema = new mongoose.Schema({
   userId:     { type: mongoose.Schema.Types.ObjectId, ref: "User", unique: true, sparse: true, required: true },
   theme:      { type: String, enum: ["light", "dark"], default: "light" },
-  // FIX: added "indigo" to enum — dashboard uses it as the default accent
   accentColor:{ type: String, enum: ["green", "blue", "purple", "red", "orange", "indigo"], default: "indigo" },
-  updatedAt:  { type: Date, default: Date.now }
+  updatedAt:  { type: Date, default: Date.now },
 });
 
 const User            = mongoose.model("User",            userSchema);
@@ -167,28 +216,26 @@ const CategoryMapping = mongoose.model("CategoryMapping", categoryMappingSchema)
 const Reflection      = mongoose.model("Reflection",      reflectionSchema);
 const Preferences     = mongoose.model("Preferences",     preferencesSchema);
 
-// ==================== STARTUP INDEX REPAIR ====================
+// ─────────────────────────────────────────────
+// INDEX REPAIR (runs once on DB open)
+// ─────────────────────────────────────────────
 async function repairIndexes() {
   try {
     const db = mongoose.connection.db;
 
-    // Step 1: Drop any bad non-sparse unique indexes
-    async function dropIfNonSparse(collectionName, indexName) {
+    async function dropIfNonSparse(col, idxName) {
       try {
-        const idxList = await db.collection(collectionName).indexes();
-        const bad = idxList.find(idx => idx.name === indexName && !idx.sparse);
+        const list = await db.collection(col).indexes();
+        const bad  = list.find(i => i.name === idxName && !i.sparse);
         if (bad) {
-          await db.collection(collectionName).dropIndex(indexName);
-          console.log(`✅ Dropped bad non-sparse ${collectionName}.${indexName}`);
+          await db.collection(col).dropIndex(idxName);
+          console.log(`✅ Fixed index: ${col}.${idxName}`);
         }
       } catch (e) {
-        if (e.codeName !== "NamespaceNotFound") {
-          console.warn(`⚠️  ${collectionName}.${indexName} check:`, e.message);
-        }
+        if (e.codeName !== "NamespaceNotFound") console.warn(`⚠️  Index check ${col}.${idxName}:`, e.message);
       }
     }
 
-    // Run in order: drop bad indexes → sync correct ones
     await Promise.all([
       dropIfNonSparse("users", "email_1"),
       dropIfNonSparse("users", "googleId_1"),
@@ -203,23 +250,18 @@ async function repairIndexes() {
       Preferences.syncIndexes(),
     ]);
 
-    console.log("✅ All indexes verified and in sync");
+    console.log("✅ All indexes in sync");
   } catch (err) {
     console.error("❌ Index repair error:", err.message);
   }
 }
 
-mongoose.connection.once("open", () => repairIndexes());
+mongoose.connection.once("open", repairIndexes);
 
-// ==================== TOKEN UTILS ====================
+// ─────────────────────────────────────────────
+// TOKEN UTILS
+// ─────────────────────────────────────────────
 const TOKEN_EXPIRY_DAYS = 30;
-
-// Crash at startup if JWT_SECRET is missing — never run unsigned in production
-if (!JWT_SECRET) {
-  console.error("❌ FATAL: JWT_SECRET environment variable is not set.");
-  console.error("   Set a random 64-char secret: node -e \"console.log(require('crypto').randomBytes(64).toString('hex'))\"");
-  process.exit(1);
-}
 
 function createAuthToken(userId) {
   const expiry  = Date.now() + TOKEN_EXPIRY_DAYS * 24 * 60 * 60 * 1000;
@@ -230,17 +272,23 @@ function createAuthToken(userId) {
 
 function verifyAuthToken(token) {
   try {
-    const parts = token.split(".");
-    if (parts.length !== 2) return null;
-    const [payload, sig] = parts;
-    if (!payload || !sig) return null;
+    if (!token || typeof token !== "string") return null;
+    const dot = token.lastIndexOf(".");
+    if (dot < 1) return null;
+    const payload  = token.slice(0, dot);
+    const sig      = token.slice(dot + 1);
     const expected = crypto.createHmac("sha256", JWT_SECRET).update(payload).digest("hex");
     // Constant-time comparison — prevents timing attacks
-    if (!crypto.timingSafeEqual(Buffer.from(sig, "hex"), Buffer.from(expected, "hex"))) return null;
-    const decoded          = Buffer.from(payload, "base64url").toString();
-    const [userId, expiry] = decoded.split(".");
-    if (!userId || !expiry) return null;
-    if (Date.now() > parseInt(expiry, 10)) return null;
+    const sigBuf = Buffer.from(sig,      "hex");
+    const expBuf = Buffer.from(expected, "hex");
+    if (sigBuf.length !== expBuf.length) return null;
+    if (!crypto.timingSafeEqual(sigBuf, expBuf)) return null;
+    const decoded          = Buffer.from(payload, "base64url").toString("utf8");
+    const lastDot          = decoded.lastIndexOf(".");
+    if (lastDot < 1) return null;
+    const userId  = decoded.slice(0, lastDot);
+    const expiry  = parseInt(decoded.slice(lastDot + 1), 10);
+    if (!userId || !expiry || Date.now() > expiry) return null;
     return userId;
   } catch {
     return null;
@@ -250,161 +298,250 @@ function verifyAuthToken(token) {
 function generateOTP() {
   return crypto.randomInt(100000, 999999).toString();
 }
-
 function hashOTP(otp) {
-  return crypto.createHash("sha256").update(otp).digest("hex");
+  return crypto.createHash("sha256").update(String(otp)).digest("hex");
 }
 
-// ==================== URL HELPER ====================
-// Derives the server's public base URL reliably.
-// Prevents the "undefined/auth/google/callback" bug when
-// PROD_URL env var is not set on Render.
+// ─────────────────────────────────────────────
+// URL HELPER
+// Derives the server's public base URL.
+// PROD_URL env var wins — falls back to request headers on Render.
+// ─────────────────────────────────────────────
 function getServerBase(req) {
-  if (process.env.PROD_URL && !process.env.PROD_URL.includes("undefined")) {
-    return process.env.PROD_URL.replace(/\/+$/, "");
-  }
-  // Fall back to deriving from the incoming request headers
+  if (PROD_URL) return PROD_URL.replace(/\/+$/, "");
   const proto = req.headers["x-forwarded-proto"] || req.protocol || "https";
   const host  = req.headers["x-forwarded-host"]  || req.headers.host || "";
   return `${proto}://${host}`;
 }
 
-// ==================== EMAIL HELPERS ====================
-const PROD_URL = process.env.PROD_URL || `http://localhost:${PORT}`;
+// ─────────────────────────────────────────────
+// INPUT HELPERS
+// ─────────────────────────────────────────────
+function sanitizeName(raw, fallback) {
+  return (raw || fallback || "User")
+    .replace(/[<>"'`]/g, "")
+    .trim()
+    .slice(0, 64) || "User";
+}
+
+function normalizeDomain(raw) {
+  let s = String(raw).trim().toLowerCase();
+  if (!s.startsWith("http://") && !s.startsWith("https://")) s = "https://" + s;
+  try {
+    return new URL(s).hostname.replace(/^www\./, "");
+  } catch {
+    return s
+      .replace(/^https?:\/\//, "").replace(/^www\./, "")
+      .split("/")[0].split("?")[0].split(":")[0];
+  }
+}
+
+// ─────────────────────────────────────────────
+// EMAIL HELPERS
+// ─────────────────────────────────────────────
+const BASE_URL = PROD_URL || `http://localhost:${PORT}`;
 
 async function sendVerificationEmail(email, token) {
-  if (!transporter) { console.warn("Email not configured"); return; }
-  const link = `${PROD_URL}/auth/verify-email?token=${token}`;
+  if (!transporter) return;
+  const link = `${BASE_URL}/auth/verify-email?token=${token}`;
   await transporter.sendMail({
-    from: `"Focus Tracker" <${EMAIL_USER}>`,
-    to:   email,
+    from:    `"Focus Tracker" <${EMAIL_USER}>`,
+    to:      email,
     subject: "Verify your Focus Tracker account",
     html: `
       <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;">
         <h2 style="color:#4f46e5;">⏱️ Welcome to Focus Tracker!</h2>
-        <p>Click the button below to verify your email and activate your account.</p>
-        <a href="${link}" style="display:inline-block;padding:14px 28px;background:#4f46e5;color:white;border-radius:8px;text-decoration:none;font-weight:600;margin:16px 0;">
+        <p>Click the button below to verify your email.</p>
+        <a href="${link}" style="display:inline-block;padding:14px 28px;background:#4f46e5;color:#fff;
+           border-radius:8px;text-decoration:none;font-weight:600;margin:16px 0;">
           Verify My Email
         </a>
-        <p style="color:#64748b;font-size:13px;">Link expires in 24 hours.</p>
+        <p style="color:#64748b;font-size:13px;">Link expires in 24 hours. If you didn't sign up, ignore this email.</p>
       </div>
-    `
+    `,
   });
 }
 
 async function sendPasswordResetEmail(email, otp) {
-  if (!transporter) throw new Error("Email not configured on server");
-
-  const info = await transporter.sendMail({
-    from: `"Focus Tracker" <${EMAIL_USER}>`,
-    to:   email,
+  if (!transporter) throw new Error("Email service not configured");
+  await transporter.sendMail({
+    from:    `"Focus Tracker" <${EMAIL_USER}>`,
+    to:      email,
     subject: "Reset your Focus Tracker password",
     html: `
       <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;">
         <h2 style="color:#4f46e5;">⏱️ Password Reset</h2>
-        <p>Your one-time code to reset your password:</p>
-        <h1 style="background:#f1f5f9;padding:20px;text-align:center;letter-spacing:8px;color:#1e293b;border-radius:8px;">
+        <p>Your one-time reset code (expires in 10 minutes):</p>
+        <div style="background:#f1f5f9;padding:24px;text-align:center;
+             font-size:36px;letter-spacing:12px;font-weight:700;
+             color:#1e293b;border-radius:8px;margin:16px 0;">
           ${otp}
-        </h1>
-        <p style="color:#64748b;font-size:13px;">Expires in 10 minutes.</p>
+        </div>
+        <p style="color:#64748b;font-size:13px;">
+          If you didn't request this, you can safely ignore this email.
+        </p>
       </div>
-    `
+    `,
   });
-  console.log("📧 sendMail response:", info.response, "| messageId:", info.messageId);
 }
 
-// ==================== AUTH MIDDLEWARE ====================
-async function authenticateToken(req, res, next) {
-  const authHeader = req.headers["authorization"];
-  const token      = authHeader?.split(" ")[1];
+// ─────────────────────────────────────────────
+// AUTH MIDDLEWARE
+// ─────────────────────────────────────────────
+async function requireAuth(req, res, next) {
+  const header = req.headers["authorization"];
+  const token  = header?.startsWith("Bearer ") ? header.slice(7) : null;
   if (!token) return res.status(401).json({ error: "Login required" });
 
   const userId = verifyAuthToken(token);
   if (!userId)  return res.status(403).json({ error: "Session expired. Please log in again." });
 
   try {
-    const user = await User.findById(userId);
-    if (!user)  return res.status(403).json({ error: "Account not found" });
+    const user = await User.findById(userId).select("-passwordHash -resetToken -verifyToken -resetTokenExpiry");
+    if (!user)  return res.status(403).json({ error: "Account not found. Please log in again." });
     req.userId    = user._id;
     req.userEmail = user.email;
     next();
   } catch (err) {
-    console.error("Auth middleware error:", err);
+    console.error("Auth middleware error:", err.message);
     res.status(500).json({ error: "Authentication error" });
   }
 }
 
 async function ensurePreferences(userId) {
-  const existing = await Preferences.findOne({ userId });
-  if (!existing) {
-    await Preferences.create({ userId, theme: "light", accentColor: "indigo" });
+  try {
+    await Preferences.findOneAndUpdate(
+      { userId },
+      { $setOnInsert: { userId, theme: "light", accentColor: "indigo" } },
+      { upsert: true, new: false }
+    );
+  } catch (err) {
+    if (err.code !== 11000) throw err;
   }
 }
 
-// ==================== GOOGLE OAUTH HELPERS ====================
-// Tiny HTML page that closes the popup and sends the result
-// back to the extension window via postMessage
-function closePopupHTML(token, user, error) {
-  const payload = token
-    ? JSON.stringify({ type: "FOCUS_TRACKER_AUTH", token, user })
-    : JSON.stringify({ type: "FOCUS_TRACKER_AUTH", error: error || "Unknown error" });
+// ─────────────────────────────────────────────
+// GOOGLE OAUTH POPUP HTML
+// Closes the popup window and sends the JWT (or error) back
+// to the opener (auth page) via postMessage.
+// ─────────────────────────────────────────────
+function buildPopupHTML(token, user, error) {
+  const payload = JSON.stringify(
+    token
+      ? { type: "FOCUS_TRACKER_AUTH", token, user }
+      : { type: "FOCUS_TRACKER_AUTH", error: error || "Sign-in failed" }
+  );
+
+  // Extension pages have a null origin — we MUST use "*" here.
+  // This is safe because the message type "FOCUS_TRACKER_AUTH" is namespaced
+  // and auth.js only processes messages with exactly that type.
+  const script = `
+(function() {
+  function send() {
+    try {
+      if (window.opener && !window.opener.closed) {
+        window.opener.postMessage(${payload}, "*");
+      }
+    } catch (e) {
+      console.warn("postMessage failed:", e);
+    }
+    // Small delay so opener can process before window closes
+    setTimeout(function() { window.close(); }, 500);
+  }
+  // Try immediately, then retry once in case opener isn't ready
+  if (document.readyState === "complete") { send(); }
+  else { window.addEventListener("load", send); }
+})();`;
 
   return `<!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>Signing in to Focus Tracker…</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>${token ? "Signing in…" : "Sign-in failed"}</title>
   <style>
-    *{box-sizing:border-box;margin:0;padding:0;}
-    body{font-family:system-ui,sans-serif;display:flex;align-items:center;
-         justify-content:center;height:100vh;background:#f5f3ef;color:#57534e;}
-    .box{text-align:center;}
-    .icon{font-size:40px;margin-bottom:12px;}
-    p{font-size:14px;color:#78716c;margin-top:8px;}
-    small{font-size:12px;color:#a8a29e;}
-    .spinner{width:36px;height:36px;border:3px solid #e0dbd4;
-             border-top-color:#4f46e5;border-radius:50%;
-             animation:spin .7s linear infinite;margin:0 auto 14px;}
-    @keyframes spin{to{transform:rotate(360deg);}}
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: system-ui, sans-serif;
+      display: flex; align-items: center; justify-content: center;
+      min-height: 100vh;
+      background: #f5f3ef; color: #57534e;
+    }
+    .box { text-align: center; padding: 32px; }
+    .icon { font-size: 40px; margin-bottom: 16px; }
+    .title { font-size: 16px; font-weight: 600; color: #1c1917; margin-bottom: 6px; }
+    .sub   { font-size: 13px; color: #a8a29e; }
+    .spinner {
+      width: 40px; height: 40px;
+      border: 3px solid #e0dbd4; border-top-color: #4f46e5;
+      border-radius: 50%; animation: spin 0.7s linear infinite;
+      margin: 0 auto 20px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
   </style>
 </head>
 <body>
   <div class="box">
     ${token
-      ? `<div class="spinner"></div><p>Signing you in…</p>`
-      : `<div class="icon">⚠️</div><p>${error || "Sign-in failed"}</p><p><small>You can close this window and try again.</small></p>`
+      ? `<div class="spinner"></div>
+         <div class="title">Signing you in…</div>
+         <div class="sub">This window will close automatically.</div>`
+      : `<div class="icon">⚠️</div>
+         <div class="title">Sign-in failed</div>
+         <div class="sub">${error || "Please close this window and try again."}</div>`
     }
   </div>
-  <script>
-    (function(){
-      try {
-        if (window.opener && !window.opener.closed) {
-          // Use specific origin if known, else null-origin (extension pages have null origin)
-          const target = window.opener.location?.origin || "*";
-          window.opener.postMessage(${payload}, target);
-        }
-      } catch(e){ console.error("postMessage failed:", e); }
-      // Give the opener 300ms to receive the message, then close
-      setTimeout(function(){ window.close(); }, 300);
-    })();
-  </` + `script>
+  <script>${script}</script>
 </body>
 </html>`;
 }
 
-// ==================== AUTH ROUTES ====================
+// ─────────────────────────────────────────────
+// SHARED: find-or-create user from Google profile
+// ─────────────────────────────────────────────
+async function findOrCreateGoogleUser({ googleId, email, name, avatar }) {
+  let user = await User.findOne({ $or: [{ googleId }, { email: email.toLowerCase() }] });
+  if (!user) {
+    user = await User.create({
+      email:       email.toLowerCase(),
+      googleId,
+      displayName: sanitizeName(name, email.split("@")[0]),
+      avatar:      avatar || "",
+      authMethod:  "google",
+      isVerified:  true,
+    });
+    await ensurePreferences(user._id);
+  } else {
+    if (!user.googleId) {
+      user.googleId   = googleId;
+      user.isVerified = true;
+      user.authMethod = user.passwordHash ? "both" : "google";
+    }
+    user.lastLoginAt = new Date();
+    if (avatar) user.avatar = avatar;
+    await user.save();
+  }
+  return user;
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// AUTH ROUTES
+// ─────────────────────────────────────────────────────────────────────
+
+// POST /auth/signup
 app.post("/auth/signup", async (req, res) => {
   const { email, password, name } = req.body;
-  if (!email || !password)
-    return res.status(400).json({ error: "Email and password are required" });
-  if (typeof email !== "string" || email.length > 254)
+
+  if (!email || typeof email !== "string" || email.length > 254)
+    return res.status(400).json({ error: "Valid email is required" });
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))
     return res.status(400).json({ error: "Invalid email address" });
-  if (typeof password !== "string" || password.length < 8 || password.length > 128)
+  if (!password || typeof password !== "string")
+    return res.status(400).json({ error: "Password is required" });
+  if (password.length < 8 || password.length > 128)
     return res.status(400).json({ error: "Password must be 8–128 characters" });
   if (name && (typeof name !== "string" || name.length > 64))
     return res.status(400).json({ error: "Name must be under 64 characters" });
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))
-    return res.status(400).json({ error: "Invalid email address" });
 
   try {
     const existing = await User.findOne({ email: email.toLowerCase() });
@@ -414,21 +551,21 @@ app.post("/auth/signup", async (req, res) => {
     const passwordHash = await bcrypt.hash(password, 12);
     const verifyToken  = crypto.randomBytes(32).toString("hex");
 
-    const safeName = (name || email.split("@")[0])
-      .replace(/[<>"'`]/g, "")   // strip html-injection chars
-      .trim()
-      .slice(0, 64);
-
     const user = await User.create({
-      email: email.toLowerCase(), passwordHash,
-      displayName: safeName,
-      authMethod: "email", isVerified: false, verifyToken
+      email:       email.toLowerCase(),
+      passwordHash,
+      displayName: sanitizeName(name, email.split("@")[0]),
+      authMethod:  "email",
+      isVerified:  false,
+      verifyToken,
     });
 
     await ensurePreferences(user._id);
 
     if (transporter) {
-      sendVerificationEmail(email, verifyToken).catch(err => console.error("Verification email failed:", err.message));
+      sendVerificationEmail(email, verifyToken).catch(e =>
+        console.error("Verification email failed:", e.message)
+      );
     } else {
       user.isVerified  = true;
       user.verifyToken = null;
@@ -436,142 +573,131 @@ app.post("/auth/signup", async (req, res) => {
     }
 
     const token = createAuthToken(user._id.toString());
-    res.json({
-      success: true, token,
+    res.status(201).json({
+      success: true,
+      token,
       user: { email: user.email, name: user.displayName, isVerified: user.isVerified },
-      message: EMAIL_USER ? "Account created! Check your email to verify." : "Account created successfully!"
+      message: transporter
+        ? "Account created! Check your email to verify."
+        : "Account created successfully!",
     });
   } catch (err) {
-    console.error("Signup error:", err);
+    console.error("Signup error:", err.message);
     res.status(500).json({ error: "Failed to create account. Please try again." });
   }
 });
 
+// GET /auth/verify-email
 app.get("/auth/verify-email", async (req, res) => {
   const { token } = req.query;
-  if (!token) return res.status(400).send("Invalid verification link");
+  if (!token || typeof token !== "string")
+    return res.status(400).send("Invalid verification link");
   try {
-    const user = await User.findOne({ verifyToken: token });
-    if (!user)  return res.status(400).send("Link expired or already used");
+    const user = await User.findOne({ verifyToken: token }).select("+verifyToken");
+    if (!user) return res.status(400).send("Link expired or already used");
     user.isVerified  = true;
     user.verifyToken = null;
     await user.save();
-    res.send(`
-      <html><body style="font-family:Arial;text-align:center;padding:60px;">
-        <h2 style="color:#22c55e;">✅ Email verified!</h2>
-        <p>You can close this tab and return to Focus Tracker.</p>
-      </body></html>
-    `);
+    res.send(`<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><title>Verified</title></head>
+<body style="font-family:Arial,sans-serif;text-align:center;padding:60px;">
+  <h2 style="color:#16a34a;">✅ Email verified!</h2>
+  <p>You can close this tab and return to Focus Tracker.</p>
+</body></html>`);
   } catch {
-    res.status(500).send("Verification failed");
+    res.status(500).send("Verification failed. Please try again.");
   }
 });
 
+// POST /auth/login
 app.post("/auth/login", async (req, res) => {
   const { email, password } = req.body;
-  if (!email || !password)
-    return res.status(400).json({ error: "Email and password are required" });
-  if (typeof email !== "string" || email.length > 254)
-    return res.status(400).json({ error: "Invalid email" });
-  if (typeof password !== "string" || password.length > 128)
-    return res.status(400).json({ error: "Invalid password" });
+
+  if (!email || typeof email !== "string" || email.length > 254)
+    return res.status(400).json({ error: "Valid email is required" });
+  if (!password || typeof password !== "string" || password.length > 128)
+    return res.status(400).json({ error: "Password is required" });
+
   try {
-    const user = await User.findOne({ email: email.toLowerCase() });
+    const user = await User.findOne({ email: email.toLowerCase() }).select("+passwordHash");
+    // Same error message whether user not found or wrong password — prevents email enumeration
     if (!user || !user.passwordHash)
       return res.status(401).json({ error: "Incorrect email or password" });
+
     const valid = await bcrypt.compare(password, user.passwordHash);
     if (!valid)
       return res.status(401).json({ error: "Incorrect email or password" });
+
     user.lastLoginAt = new Date();
     await user.save();
     await ensurePreferences(user._id);
+
     const token = createAuthToken(user._id.toString());
-    res.json({ success: true, token, user: { email: user.email, name: user.displayName, isVerified: user.isVerified } });
+    res.json({
+      success: true,
+      token,
+      user: { email: user.email, name: user.displayName, isVerified: user.isVerified },
+    });
   } catch (err) {
-    console.error("Login error:", err);
+    console.error("Login error:", err.message);
     res.status(500).json({ error: "Login failed. Please try again." });
   }
 });
 
-// POST /auth/google — kept for backward compatibility (chrome.identity flow)
-// Accepts an accessToken from chrome.identity.getAuthToken
+// POST /auth/google — chrome.identity fallback (Chrome extension native flow)
 app.post("/auth/google", async (req, res) => {
-  const { idToken, accessToken } = req.body;
   if (!googleClient)
-    return res.status(501).json({ error: "Google login not configured on this server" });
+    return res.status(501).json({ error: "Google login not configured" });
+
+  const { idToken, accessToken } = req.body;
   try {
     let googleId, email, name, avatar;
+
     if (idToken) {
-      const ticket  = await googleClient.verifyIdToken({ idToken, audience: GOOGLE_CLIENT_ID });
-      const payload = ticket.getPayload();
-      googleId = payload.sub; email = payload.email; name = payload.name; avatar = payload.picture;
-    } else if (accessToken) {
-      const r = await fetch(`https://www.googleapis.com/oauth2/v3/userinfo`, {
-        headers: { Authorization: `Bearer ${accessToken}` }
+      const ticket = await googleClient.verifyIdToken({
+        idToken,
+        audience: GOOGLE_CLIENT_ID,
       });
-      if (!r.ok) throw new Error("Invalid Google token");
-      const info = await r.json();
-      googleId = info.sub; email = info.email; name = info.name; avatar = info.picture;
+      const p = ticket.getPayload();
+      googleId = p.sub; email = p.email; name = p.name; avatar = p.picture;
+    } else if (accessToken) {
+      const r = await fetch("https://www.googleapis.com/oauth2/v3/userinfo", {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+      if (!r.ok) throw new Error("Google userinfo request failed");
+      const p = await r.json();
+      googleId = p.sub; email = p.email; name = p.name; avatar = p.picture;
     } else {
       return res.status(400).json({ error: "Google token required" });
     }
 
-    let user = await User.findOne({ $or: [{ googleId }, { email }] });
-    if (!user) {
-      const safeGoogleName = (name || email.split("@")[0])
-        .replace(/[<>"'`]/g, "").trim().slice(0, 64);
-      user = await User.create({
-        email: email.toLowerCase(), googleId,
-        displayName: safeGoogleName,
-        avatar: avatar || "", authMethod: "google", isVerified: true
-      });
-      await ensurePreferences(user._id);
-    } else {
-      if (!user.googleId) {
-        user.googleId   = googleId;
-        user.authMethod = user.passwordHash ? "both" : "google";
-        user.isVerified = true;
-      }
-      user.lastLoginAt = new Date();
-      user.avatar      = avatar || user.avatar;
-      await user.save();
-    }
+    if (!email) throw new Error("Google did not return an email");
 
+    const user  = await findOrCreateGoogleUser({ googleId, email, name, avatar });
     const token = createAuthToken(user._id.toString());
-    res.json({ success: true, token, user: { email: user.email, name: user.displayName, avatar: user.avatar, isVerified: true } });
+    res.json({
+      success: true,
+      token,
+      user: { email: user.email, name: user.displayName, avatar: user.avatar, isVerified: true },
+    });
   } catch (err) {
-    console.error("Google auth error:", err);
+    console.error("Google auth (identity) error:", err.message);
     res.status(401).json({ error: "Google sign-in failed. Please try again." });
   }
 });
 
-// ==================== GOOGLE WEB OAUTH POPUP FLOW ====================
-// Works on ALL browsers — Chrome, Edge, Firefox, Opera, Brave, Safari…
-// No chrome.identity needed. Just a standard browser popup + redirect.
-//
-// SETUP REQUIRED:
-//   1. Google Cloud Console → Credentials → Web Application OAuth client
-//   2. Add these Authorized redirect URIs:
-//        https://habit-tracker-extension.onrender.com/auth/google/callback
-//        http://localhost:5000/auth/google/callback
-//   3. Set env vars on Render:
-//        GOOGLE_CLIENT_ID = <your web client id>
-//        PROD_URL = https://habit-tracker-extension.onrender.com
-
-// GET /auth/google/popup — auth.js opens this URL in a small popup window.
-// We immediately redirect to Google's OAuth consent screen.
+// GET /auth/google/popup — opens Google consent screen in the popup window
 app.get("/auth/google/popup", (req, res) => {
-  if (!googleClient || !GOOGLE_CLIENT_ID) {
-    return res.status(501).send(closePopupHTML(null, null,
-      "Google sign-in is not configured on this server. Set GOOGLE_CLIENT_ID env var."));
+  if (!googleClient) {
+    return res.status(501).send(buildPopupHTML(null, null,
+      "Google sign-in is not configured on this server."));
   }
 
   const base        = getServerBase(req);
   const callbackUri = `${base}/auth/google/callback`;
 
-  // We encode the callbackUri into `state` so the /callback handler
-  // uses the EXACT same redirect_uri for the token exchange.
-  // Google requires these to match byte-for-byte.
+  // Encode the exact callbackUri into state — /callback reads it back
+  // so both sides use the byte-for-byte same redirect_uri (Google requires this)
   const state = Buffer.from(JSON.stringify({ cb: callbackUri })).toString("base64url");
 
   const params = new URLSearchParams({
@@ -587,251 +713,224 @@ app.get("/auth/google/popup", (req, res) => {
   res.redirect(`https://accounts.google.com/o/oauth2/v2/auth?${params}`);
 });
 
-// GET /auth/google/callback — Google sends the user here after approval.
-// We exchange the code for tokens, find/create the user, then close
-// the popup and send the JWT back to the extension via postMessage.
+// GET /auth/google/callback — Google redirects here after user approves
 app.get("/auth/google/callback", async (req, res) => {
   const { code, error, state } = req.query;
 
   if (error || !code) {
     const msg = error === "access_denied"
       ? "Google sign-in was cancelled"
-      : (error || "Google sign-in failed — no authorisation code received");
-    console.warn(`[Google callback] error: ${msg}`);
-    return res.send(closePopupHTML(null, null, msg));
+      : (error || "Sign-in failed — no authorisation code received");
+    return res.send(buildPopupHTML(null, null, msg));
   }
 
   if (!googleClient) {
-    return res.send(closePopupHTML(null, null, "Google OAuth is not configured on this server"));
+    return res.send(buildPopupHTML(null, null, "Google OAuth is not configured"));
   }
 
   try {
-    // Recover the exact redirect_uri that /popup used from the state param.
-    // Falls back to deriving it if state is missing (e.g. direct browser visit).
+    // Recover exact redirect_uri from state (must match what /popup sent)
     let callbackUri;
     try {
-      const decoded = JSON.parse(Buffer.from(state || "", "base64url").toString());
-      callbackUri   = decoded.cb;
-    } catch {}
+      const decoded = JSON.parse(Buffer.from(state || "", "base64url").toString("utf8"));
+      callbackUri   = decoded?.cb;
+    } catch { /* fall through */ }
     if (!callbackUri) {
       callbackUri = `${getServerBase(req)}/auth/google/callback`;
     }
 
-    // Exchange authorisation code for id_token + access_token
-    // redirect_uri must be byte-for-byte identical to what was sent in /popup
+    // Exchange code for tokens
     const { tokens } = await googleClient.getToken({ code, redirect_uri: callbackUri });
-
     if (!tokens.id_token) throw new Error("No id_token in Google response");
 
-    // Verify id_token and extract user profile
+    // Verify and extract profile
     const ticket = await googleClient.verifyIdToken({
       idToken:  tokens.id_token,
       audience: GOOGLE_CLIENT_ID,
     });
     const p = ticket.getPayload();
     const { sub: googleId, email, name, picture: avatar } = p;
+    if (!email) throw new Error("Google did not return an email");
 
-    if (!email) throw new Error("Google did not return an email address");
-
-    // Find existing user or create a new one
-    let user = await User.findOne({ $or: [{ googleId }, { email: email.toLowerCase() }] });
-    if (!user) {
-      const safeCallbackName = (name || email.split("@")[0])
-        .replace(/[<>"'`]/g, "").trim().slice(0, 64);
-      user = await User.create({
-        email:       email.toLowerCase(),
-        googleId,
-        displayName: safeCallbackName,
-        avatar:      avatar || "",
-        authMethod:  "google",
-        isVerified:  true,
-      });
-      await ensurePreferences(user._id);
-      console.log("[Google callback] New user created via Google OAuth");
-    } else {
-      // Link Google ID to existing email/password account if needed
-      if (!user.googleId) {
-        user.googleId   = googleId;
-        user.isVerified = true;
-        user.authMethod = user.passwordHash ? "both" : "google";
-      }
-      user.lastLoginAt = new Date();
-      user.avatar      = avatar || user.avatar;
-      await user.save();
-      console.log("[Google callback] Existing user signed in via Google OAuth");
-    }
-
+    const user  = await findOrCreateGoogleUser({ googleId, email, name, avatar });
     const token = createAuthToken(user._id.toString());
 
-    res.send(closePopupHTML(token, {
+    res.send(buildPopupHTML(token, {
       email:      user.email,
       name:       user.displayName,
       avatar:     user.avatar,
       isVerified: true,
     }));
   } catch (err) {
-    console.error("❌ Google callback error:", err.message);
-    res.send(closePopupHTML(null, null,
-      "Google sign-in failed. Please close this window and try again."));
+    console.error("Google callback error:", err.message);
+    res.send(buildPopupHTML(null, null,
+      "Sign-in failed. Please close this window and try again."));
   }
 });
 
-// GET /auth/google/debug — LOCAL DEV ONLY. Disabled in production.
+// GET /auth/google/debug — dev only, blocked in production
 app.get("/auth/google/debug", (req, res) => {
-  if (process.env.NODE_ENV === "production") {
+  if (process.env.NODE_ENV === "production")
     return res.status(404).json({ error: "Not found" });
-  }
   const base = getServerBase(req);
   res.json({
-    GOOGLE_CLIENT_ID_set:     !!GOOGLE_CLIENT_ID,
-    GOOGLE_CLIENT_SECRET_set: !!GOOGLE_CLIENT_SECRET,
-    redirect_uri_will_be:     `${base}/auth/google/callback`,
-    note: "This route is disabled in production (NODE_ENV=production)",
+    google_configured:    !!googleClient,
+    redirect_uri:         `${base}/auth/google/callback`,
+    prod_url_env:         PROD_URL || "(not set)",
+    note:                 "Disabled in production",
   });
 });
 
-// ==================== OTHER AUTH ROUTES ====================
+// POST /auth/forgot-password
 app.post("/auth/forgot-password", async (req, res) => {
   const { email } = req.body;
-  if (!email || typeof email !== "string" || email.length > 254)
-    return res.status(400).json({ error: "Valid email required" });
-  try {
-    const user = await User.findOne({ email: email.toLowerCase() });
+  if (!email || typeof email !== "string" || email.length > 254 ||
+      !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))
+    return res.status(400).json({ error: "Valid email is required" });
 
-    // User not found — return generic message (don't reveal whether email exists)
+  try {
+    const user = await User.findOne({ email: email.toLowerCase() })
+      .select("+resetToken +resetTokenExpiry +passwordHash");
+
+    // Generic response whether user exists or not — prevents email enumeration
     if (!user) {
-      console.log("⚠️  No user found for:", email);
       return res.json({ success: true, message: "If that email exists, a reset code was sent." });
     }
 
-    // Google-only account — has no password to reset, tell them clearly
+    // Google-only account — no password to reset
     if (!user.passwordHash) {
-      console.log("⚠️  Account is Google-only, no password to reset:", email);
       return res.status(400).json({
-        error: "This account uses Google Sign-In. Please click 'Continue with Google' to log in — there is no password to reset."
+        error: "This account uses Google Sign-In. Click 'Continue with Google' to log in — there is no password to reset.",
       });
     }
 
     const otp       = generateOTP();
-    const otpHash   = hashOTP(otp);
-    const otpExpiry = new Date(Date.now() + 10 * 60 * 1000);
-    user.resetToken       = otpHash;
+    const otpExpiry = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
+
+    user.resetToken       = hashOTP(otp);
     user.resetTokenExpiry = otpExpiry;
     await user.save();
 
     await sendPasswordResetEmail(email, otp);
-    console.log("✅ Password reset email dispatched");
+    console.log("✅ Password reset email sent");
 
     res.json({ success: true, message: "Reset code sent! Check your inbox." });
   } catch (err) {
-    console.error("❌ Forgot password error:", err.message);
+    console.error("Forgot password error:", err.message);
     res.status(500).json({ error: "Failed to send reset email. Please try again." });
   }
 });
 
+// POST /auth/reset-password
 app.post("/auth/reset-password", async (req, res) => {
   const { email, otp, newPassword } = req.body;
-  if (!email || !otp || !newPassword)
-    return res.status(400).json({ error: "Email, OTP and new password are required" });
-  if (typeof email !== "string" || email.length > 254)
-    return res.status(400).json({ error: "Invalid email" });
-  if (typeof otp !== "string" || !/^\d{6}$/.test(otp))
-    return res.status(400).json({ error: "OTP must be a 6-digit number" });
-  if (typeof newPassword !== "string" || newPassword.length < 8 || newPassword.length > 128)
+
+  if (!email || typeof email !== "string" || email.length > 254)
+    return res.status(400).json({ error: "Valid email is required" });
+  if (!otp || typeof otp !== "string" || !/^\d{6}$/.test(otp))
+    return res.status(400).json({ error: "Enter the 6-digit code from your email" });
+  if (!newPassword || typeof newPassword !== "string" ||
+      newPassword.length < 8 || newPassword.length > 128)
     return res.status(400).json({ error: "Password must be 8–128 characters" });
+
   try {
-    const user = await User.findOne({ email: email.toLowerCase() });
+    const user = await User.findOne({ email: email.toLowerCase() })
+      .select("+resetToken +resetTokenExpiry +passwordHash");
+
     if (!user || !user.resetToken || !user.resetTokenExpiry)
       return res.status(400).json({ error: "Invalid or expired reset code" });
     if (new Date() > user.resetTokenExpiry)
       return res.status(400).json({ error: "Reset code expired. Please request a new one." });
     if (hashOTP(otp) !== user.resetToken)
       return res.status(400).json({ error: "Incorrect reset code" });
+
     user.passwordHash     = await bcrypt.hash(newPassword, 12);
     user.resetToken       = null;
     user.resetTokenExpiry = null;
     await user.save();
-    res.json({ success: true, message: "Password reset successfully. You can now log in." });
+
+    res.json({ success: true, message: "Password reset! You can now sign in." });
   } catch (err) {
-    console.error("Reset password error:", err);
-    res.status(500).json({ error: "Password reset failed" });
+    console.error("Reset password error:", err.message);
+    res.status(500).json({ error: "Password reset failed. Please try again." });
   }
 });
 
-app.get("/auth/me", authenticateToken, async (req, res) => {
+// GET /auth/me
+app.get("/auth/me", requireAuth, async (req, res) => {
   try {
-    const user = await User.findById(req.userId, { passwordHash: 0, resetToken: 0, verifyToken: 0 });
+    const user = await User.findById(req.userId);
     if (!user) return res.status(404).json({ error: "User not found" });
-    res.json({ email: user.email, name: user.displayName, avatar: user.avatar, isVerified: user.isVerified });
+    res.json({
+      email:      user.email,
+      name:       user.displayName,
+      avatar:     user.avatar,
+      isVerified: user.isVerified,
+    });
   } catch {
     res.status(500).json({ error: "Failed to fetch user info" });
   }
 });
 
-app.post("/auth/logout", authenticateToken, (req, res) => {
+// POST /auth/logout
+app.post("/auth/logout", requireAuth, (req, res) => {
+  // Tokens are stateless — client clears its own storage
   res.json({ success: true });
 });
 
-// ==================== BLOCKED SITES ====================
-function normalizeDomain(raw) {
-  let s = raw.trim().toLowerCase();
-  if (!s.startsWith("http://") && !s.startsWith("https://")) s = "https://" + s;
-  try {
-    return new URL(s).hostname.replace(/^www\./, "");
-  } catch {
-    return raw.trim().toLowerCase()
-      .replace(/^https?:\/\//, "").replace(/^www\./, "")
-      .split("/")[0].split("?")[0].split(":")[0];
-  }
-}
-
-app.get("/blocked-sites", authenticateToken, async (req, res) => {
+// ─────────────────────────────────────────────────────────────────────
+// BLOCKED SITES
+// ─────────────────────────────────────────────────────────────────────
+app.get("/blocked-sites", requireAuth, async (req, res) => {
   try {
     const sites = await BlockedSite.find({ userId: req.userId }, { _id: 0, site: 1 });
     res.json(sites.map(s => s.site));
   } catch (err) {
-    console.error("GET /blocked-sites error:", err);
+    console.error("GET /blocked-sites:", err.message);
     res.status(500).json({ error: "Failed to load blocked sites" });
   }
 });
 
-app.post("/blocked-sites", authenticateToken, async (req, res) => {
+app.post("/blocked-sites", requireAuth, async (req, res) => {
   const { site } = req.body;
-  if (!site || typeof site !== "string")
-    return res.status(400).json({ error: "No site provided" });
-  if (site.length > 253)
-    return res.status(400).json({ error: "Domain too long" });
+  if (!site || typeof site !== "string" || site.length > 253)
+    return res.status(400).json({ error: "Valid site URL required" });
+
   const normalized = normalizeDomain(site);
-  if (!normalized || normalized.length < 4)
-    return res.status(400).json({ error: "Invalid site URL" });
+  if (!normalized || normalized.length < 4 || !normalized.includes("."))
+    return res.status(400).json({ error: "Invalid domain" });
+
   try {
     await BlockedSite.updateOne(
       { userId: req.userId, site: normalized },
       { $set: { userId: req.userId, site: normalized } },
       { upsert: true }
     );
-    console.log("✅ Blocked site saved");
     res.json({ success: true, site: normalized });
   } catch (err) {
     if (err.code === 11000) return res.json({ success: true, site: normalized });
-    console.error(`❌ POST /blocked-sites error — code: ${err.code} — message: ${err.message}`);
+    console.error("POST /blocked-sites:", err.message);
     res.status(500).json({ error: "Failed to save blocked site" });
   }
 });
 
-app.delete("/blocked-sites/:site", authenticateToken, async (req, res) => {
-  const normalized = normalizeDomain(decodeURIComponent(req.params.site));
+app.delete("/blocked-sites/:site", requireAuth, async (req, res) => {
   try {
+    const normalized = normalizeDomain(decodeURIComponent(req.params.site));
     await BlockedSite.deleteOne({ userId: req.userId, site: normalized });
     res.json({ success: true });
   } catch (err) {
-    console.error("DELETE /blocked-sites error:", err);
+    console.error("DELETE /blocked-sites:", err.message);
     res.status(500).json({ error: "Failed to remove blocked site" });
   }
 });
 
-// ==================== CATEGORIES ====================
-app.get("/categories", authenticateToken, async (req, res) => {
+// ─────────────────────────────────────────────────────────────────────
+// CATEGORIES
+// ─────────────────────────────────────────────────────────────────────
+const VALID_CATEGORIES = ["Learning", "Development", "Distraction", "Other"];
+
+app.get("/categories", requireAuth, async (req, res) => {
   try {
     const mappings = await CategoryMapping.find(
       { userId: req.userId },
@@ -839,27 +938,24 @@ app.get("/categories", authenticateToken, async (req, res) => {
     );
     res.json(mappings);
   } catch (err) {
-    console.error("GET /categories error:", err);
+    console.error("GET /categories:", err.message);
     res.status(500).json({ error: "Failed to load categories" });
   }
 });
 
-app.post("/categories", authenticateToken, async (req, res) => {
+app.post("/categories", requireAuth, async (req, res) => {
   const { domain, category } = req.body;
-  if (!domain || !category)
-    return res.status(400).json({ error: "Domain and category required" });
-  if (typeof domain !== "string" || domain.length > 253)
-    return res.status(400).json({ error: "Invalid domain" });
-  if (typeof category !== "string")
-    return res.status(400).json({ error: "Invalid category" });
 
-  const validCategories = ["Learning", "Development", "Distraction", "Other"];
-  if (!validCategories.includes(category))
-    return res.status(400).json({ error: `Invalid category. Must be one of: ${validCategories.join(", ")}` });
+  if (!domain || typeof domain !== "string" || domain.length > 253)
+    return res.status(400).json({ error: "Valid domain required" });
+  if (!category || typeof category !== "string")
+    return res.status(400).json({ error: "Category required" });
+  if (!VALID_CATEGORIES.includes(category))
+    return res.status(400).json({ error: `Category must be one of: ${VALID_CATEGORIES.join(", ")}` });
 
   const normalized = normalizeDomain(domain);
   if (!normalized || !normalized.includes("."))
-    return res.status(400).json({ error: "Invalid domain — must contain at least one dot (e.g. youtube.com)" });
+    return res.status(400).json({ error: "Invalid domain" });
 
   try {
     await CategoryMapping.updateOne(
@@ -867,130 +963,163 @@ app.post("/categories", authenticateToken, async (req, res) => {
       { $set: { userId: req.userId, domain: normalized, category, updatedAt: new Date() } },
       { upsert: true }
     );
-    console.log("✅ Category mapping saved");
     res.json({ success: true, domain: normalized, category });
   } catch (err) {
     if (err.code === 11000) return res.json({ success: true, domain: normalized, category });
-    console.error("POST /categories error:", err);
+    console.error("POST /categories:", err.message);
     res.status(500).json({ error: "Failed to save category" });
   }
 });
 
-app.delete("/categories/:domain", authenticateToken, async (req, res) => {
-  const domain     = decodeURIComponent(req.params.domain);
-  const normalized = normalizeDomain(domain);
-
+app.delete("/categories/:domain", requireAuth, async (req, res) => {
   try {
-    const result = await CategoryMapping.deleteOne({ userId: req.userId, domain: normalized });
-    if (result.deletedCount === 0) {
-      await CategoryMapping.deleteOne({ userId: req.userId, domain: domain });
-    }
+    const normalized = normalizeDomain(decodeURIComponent(req.params.domain));
+    await CategoryMapping.deleteOne({ userId: req.userId, domain: normalized });
     res.json({ success: true });
   } catch (err) {
-    console.error("DELETE /categories error:", err);
+    console.error("DELETE /categories:", err.message);
     res.status(500).json({ error: "Failed to delete category" });
   }
 });
 
-// ==================== REFLECTIONS ====================
-app.get("/reflections", authenticateToken, async (req, res) => {
+// ─────────────────────────────────────────────────────────────────────
+// REFLECTIONS
+// ─────────────────────────────────────────────────────────────────────
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+app.get("/reflections", requireAuth, async (req, res) => {
   const { startDate, endDate } = req.query;
   try {
     const query = { userId: req.userId };
-    if (startDate && endDate) query.date = { $gte: startDate, $lte: endDate };
+    if (startDate && endDate && DATE_RE.test(startDate) && DATE_RE.test(endDate)) {
+      query.date = { $gte: startDate, $lte: endDate };
+    }
     const reflections = await Reflection.find(query).sort({ date: -1 });
     res.json(reflections);
   } catch (err) {
-    console.error("GET /reflections error:", err);
+    console.error("GET /reflections:", err.message);
     res.status(500).json({ error: "Failed to load reflections" });
   }
 });
 
-app.get("/reflections/:date", authenticateToken, async (req, res) => {
+app.get("/reflections/:date", requireAuth, async (req, res) => {
+  if (!DATE_RE.test(req.params.date))
+    return res.status(400).json({ error: "Invalid date format (YYYY-MM-DD)" });
   try {
     const r = await Reflection.findOne({ userId: req.userId, date: req.params.date });
     res.json(r || {});
   } catch (err) {
-    console.error("GET /reflections/:date error:", err);
+    console.error("GET /reflections/:date:", err.message);
     res.status(500).json({ error: "Failed to load reflection" });
   }
 });
 
-app.post("/reflections", authenticateToken, async (req, res) => {
+app.post("/reflections", requireAuth, async (req, res) => {
   const { date, distractions, wentWell, improvements } = req.body;
-  if (!date) return res.status(400).json({ error: "Date required" });
+  if (!date || !DATE_RE.test(date))
+    return res.status(400).json({ error: "Valid date required (YYYY-MM-DD)" });
+
+  const clamp = (s) => typeof s === "string" ? s.slice(0, 2000) : "";
+
   try {
     await Reflection.updateOne(
       { userId: req.userId, date },
-      { $set: { userId: req.userId, date, distractions: distractions || "", wentWell: wentWell || "", improvements: improvements || "", createdAt: new Date() } },
+      { $set: {
+          userId: req.userId, date,
+          distractions: clamp(distractions),
+          wentWell:     clamp(wentWell),
+          improvements: clamp(improvements),
+          createdAt:    new Date(),
+      }},
       { upsert: true }
     );
     res.json({ success: true });
   } catch (err) {
     if (err.code === 11000) return res.json({ success: true });
-    console.error("POST /reflections error:", err);
+    console.error("POST /reflections:", err.message);
     res.status(500).json({ error: "Failed to save reflection" });
   }
 });
 
-// ==================== PREFERENCES ====================
-app.get("/preferences", authenticateToken, async (req, res) => {
+// ─────────────────────────────────────────────────────────────────────
+// PREFERENCES
+// ─────────────────────────────────────────────────────────────────────
+app.get("/preferences", requireAuth, async (req, res) => {
   try {
     let prefs = await Preferences.findOne({ userId: req.userId });
-    if (!prefs) prefs = await Preferences.create({ userId: req.userId, theme: "light", accentColor: "indigo" });
-    res.json(prefs);
+    if (!prefs) {
+      prefs = await Preferences.create({ userId: req.userId, theme: "light", accentColor: "indigo" });
+    }
+    res.json({ theme: prefs.theme, accentColor: prefs.accentColor });
   } catch (err) {
-    console.error("GET /preferences error:", err);
+    console.error("GET /preferences:", err.message);
     res.status(500).json({ error: "Failed to load preferences" });
   }
 });
 
-app.post("/preferences", authenticateToken, async (req, res) => {
+app.post("/preferences", requireAuth, async (req, res) => {
   const { theme, accentColor } = req.body;
+  const validThemes  = ["light", "dark"];
+  const validAccents = ["green", "blue", "purple", "red", "orange", "indigo"];
+
+  const safeTheme  = validThemes.includes(theme)    ? theme  : "light";
+  const safeAccent = validAccents.includes(accentColor) ? accentColor : "indigo";
+
   try {
     await Preferences.updateOne(
       { userId: req.userId },
-      { $set: { theme: theme || "light", accentColor: accentColor || "indigo", updatedAt: new Date() } },
+      { $set: { theme: safeTheme, accentColor: safeAccent, updatedAt: new Date() } },
       { upsert: true }
     );
     res.json({ success: true });
   } catch (err) {
     if (err.code === 11000) return res.json({ success: true });
-    console.error("POST /preferences error:", err);
+    console.error("POST /preferences:", err.message);
     res.status(500).json({ error: "Failed to save preferences" });
   }
 });
 
-// ==================== HEALTH CHECK ====================
+// ─────────────────────────────────────────────────────────────────────
+// HEALTH CHECK
+// ─────────────────────────────────────────────────────────────────────
 app.get("/health", (req, res) => {
   res.json({
     status:    "ok",
     timestamp: new Date().toISOString(),
-    google:    GOOGLE_CLIENT_ID ? "configured" : "not configured",
+    db:        mongoose.connection.readyState === 1 ? "connected" : "disconnected",
+    email:     transporter ? "configured" : "disabled",
+    google:    googleClient ? "configured" : "not configured",
   });
 });
 
-// ==================== RENDER FREE TIER KEEP-ALIVE ====================
-function startSelfPing(url) {
-  if (!url || process.env.NODE_ENV !== "production") return;
+// ─────────────────────────────────────────────────────────────────────
+// KEEP-ALIVE (Render free tier — prevents cold starts)
+// Pings /health every 14 minutes to keep the dyno awake.
+// Only runs in production.
+// ─────────────────────────────────────────────────────────────────────
+function startKeepAlive() {
+  if (process.env.NODE_ENV !== "production" || !PROD_URL) return;
+  const url = `${PROD_URL.replace(/\/+$/, "")}/health`;
   setInterval(async () => {
     try {
-      await fetch(`${url}/health`);
-      console.log("🏓 Self-ping OK");
+      const r = await fetch(url, { signal: AbortSignal.timeout(10000) });
+      if (!r.ok) console.warn("⚠️  Keep-alive ping returned:", r.status);
     } catch (err) {
-      console.warn("⚠️  Self-ping failed:", err.message);
+      console.warn("⚠️  Keep-alive ping failed:", err.message);
     }
-  }, 14 * 60 * 1000);
+  }, 14 * 60 * 1000); // 14 minutes
+  console.log(`🏓 Keep-alive enabled → ${url} (every 14 min)`);
 }
 
-// ==================== START ====================
+// ─────────────────────────────────────────────────────────────────────
+// START SERVER
+// ─────────────────────────────────────────────────────────────────────
 app.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
-  console.log(`   Auth: email/password ${GOOGLE_CLIENT_ID ? "+ Google OAuth ✅" : "(GOOGLE_CLIENT_ID not set)"}`);
-  if (GOOGLE_CLIENT_ID && !GOOGLE_CLIENT_SECRET) {
-    console.warn("   ⚠️  GOOGLE_CLIENT_SECRET not set — Google OAuth code exchange will fail!");
-  }
-  console.log(`   DB: ${MONGODB_URI ? "MongoDB Atlas ✅" : "localhost (set MONGODB_URI for production)"}`);
-  console.log(`   PROD_URL: ${process.env.PROD_URL || "(not set — will derive from request headers)"}`);
-  startSelfPing(process.env.PROD_URL);
+  console.log(`\n🚀 Focus Tracker server running on port ${PORT}`);
+  console.log(`   Environment : ${process.env.NODE_ENV || "development"}`);
+  console.log(`   Database    : ${MONGODB_URI ? "MongoDB Atlas" : "localhost"}`);
+  console.log(`   Email       : ${transporter ? EMAIL_USER : "disabled"}`);
+  console.log(`   Google OAuth: ${googleClient ? "enabled" : "disabled (set GOOGLE_CLIENT_ID + GOOGLE_CLIENT_SECRET)"}`);
+  console.log(`   Public URL  : ${PROD_URL || "(not set — derived from request headers)"}\n`);
+  startKeepAlive();
 });
