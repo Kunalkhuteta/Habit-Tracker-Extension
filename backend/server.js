@@ -45,6 +45,17 @@ app.use(cors({
 
 app.use(express.json({ limit: "10kb" }));
 
+// ==================== SECURITY HEADERS ====================
+app.use((req, res, next) => {
+  res.setHeader("X-Content-Type-Options",  "nosniff");
+  res.setHeader("X-Frame-Options",          "DENY");
+  res.setHeader("X-XSS-Protection",         "0");           // modern browsers use CSP instead
+  res.setHeader("Referrer-Policy",          "no-referrer");
+  res.setHeader("Permissions-Policy",       "geolocation=(), camera=(), microphone=()");
+  res.removeHeader("X-Powered-By");                         // don't advertise Express
+  next();
+});
+
 // ==================== RATE LIMITING ====================
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, max: 20,
@@ -67,11 +78,24 @@ mongoose.connect(MONGODB_URI || "mongodb://localhost:27017/focus-tracker")
 let transporter = null;
 try {
   if (EMAIL_USER && EMAIL_PASSWORD) {
+    const cleanPass = EMAIL_PASSWORD.replace(/\s/g, "");
+    console.log(`📧 Email setup — user: ${EMAIL_USER} | pass length: ${cleanPass.length} chars`);
     transporter = nodemailer.createTransport({
-      service: "gmail",
-      auth: { user: EMAIL_USER, pass: EMAIL_PASSWORD.replace(/\s/g, "") }
+      host: "smtp.gmail.com",
+      port: 465,
+      secure: true,
+      auth: { user: EMAIL_USER, pass: cleanPass },
     });
-    console.log("✅ Email transporter ready");
+    // Verify at startup so you see auth errors immediately in logs
+    transporter.verify((err, success) => {
+      if (err) {
+        console.error("❌ Gmail SMTP verify FAILED at startup:", err.message);
+        console.error("   Code:", err.code, "| Response:", err.response);
+        console.error("   Fix: myaccount.google.com → Security → 2-Step Verification → App Passwords");
+      } else {
+        console.log("✅ Gmail SMTP verified — ready to send");
+      }
+    });
   } else {
     console.warn("⚠️  EMAIL_USER or EMAIL_PASSWORD not set — emails disabled");
   }
@@ -80,7 +104,11 @@ try {
 }
 
 // ==================== GOOGLE OAUTH ====================
-
+// Uses Web Application client type — works on ALL browsers (Chrome, Edge, Firefox, Opera…)
+// Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET env vars (from Google Cloud Console)
+// Authorized redirect URI to register in Google Cloud Console:
+//   https://habit-tracker-extension.onrender.com/auth/google/callback
+//   http://localhost:5000/auth/google/callback   ← for local dev
 const googleClient = GOOGLE_CLIENT_ID
   ? new OAuth2Client(GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET)
   : null;
@@ -144,6 +172,7 @@ async function repairIndexes() {
   try {
     const db = mongoose.connection.db;
 
+    // Step 1: Drop any bad non-sparse unique indexes
     async function dropIfNonSparse(collectionName, indexName) {
       try {
         const idxList = await db.collection(collectionName).indexes();
@@ -159,6 +188,7 @@ async function repairIndexes() {
       }
     }
 
+    // Run in order: drop bad indexes → sync correct ones
     await Promise.all([
       dropIfNonSparse("users", "email_1"),
       dropIfNonSparse("users", "googleId_1"),
@@ -184,24 +214,33 @@ mongoose.connection.once("open", () => repairIndexes());
 // ==================== TOKEN UTILS ====================
 const TOKEN_EXPIRY_DAYS = 30;
 
+// Crash at startup if JWT_SECRET is missing — never run unsigned in production
+if (!JWT_SECRET) {
+  console.error("❌ FATAL: JWT_SECRET environment variable is not set.");
+  console.error("   Set a random 64-char secret: node -e \"console.log(require('crypto').randomBytes(64).toString('hex'))\"");
+  process.exit(1);
+}
+
 function createAuthToken(userId) {
   const expiry  = Date.now() + TOKEN_EXPIRY_DAYS * 24 * 60 * 60 * 1000;
   const payload = Buffer.from(`${userId}.${expiry}`).toString("base64url");
-  const secret  = JWT_SECRET || "change-this-secret-in-production";
-  const sig     = crypto.createHmac("sha256", secret).update(payload).digest("hex");
+  const sig     = crypto.createHmac("sha256", JWT_SECRET).update(payload).digest("hex");
   return `${payload}.${sig}`;
 }
 
 function verifyAuthToken(token) {
   try {
-    const [payload, sig] = token.split(".");
+    const parts = token.split(".");
+    if (parts.length !== 2) return null;
+    const [payload, sig] = parts;
     if (!payload || !sig) return null;
-    const secret   = JWT_SECRET || "change-this-secret-in-production";
-    const expected = crypto.createHmac("sha256", secret).update(payload).digest("hex");
-    if (sig !== expected) return null;
-    const decoded        = Buffer.from(payload, "base64url").toString();
+    const expected = crypto.createHmac("sha256", JWT_SECRET).update(payload).digest("hex");
+    // Constant-time comparison — prevents timing attacks
+    if (!crypto.timingSafeEqual(Buffer.from(sig, "hex"), Buffer.from(expected, "hex"))) return null;
+    const decoded          = Buffer.from(payload, "base64url").toString();
     const [userId, expiry] = decoded.split(".");
-    if (Date.now() > parseInt(expiry)) return null;
+    if (!userId || !expiry) return null;
+    if (Date.now() > parseInt(expiry, 10)) return null;
     return userId;
   } catch {
     return null;
@@ -255,7 +294,8 @@ async function sendVerificationEmail(email, token) {
 
 async function sendPasswordResetEmail(email, otp) {
   if (!transporter) throw new Error("Email not configured on server");
-  await transporter.sendMail({
+
+  const info = await transporter.sendMail({
     from: `"Focus Tracker" <${EMAIL_USER}>`,
     to:   email,
     subject: "Reset your Focus Tracker password",
@@ -270,6 +310,7 @@ async function sendPasswordResetEmail(email, otp) {
       </div>
     `
   });
+  console.log("📧 sendMail response:", info.response, "| messageId:", info.messageId);
 }
 
 // ==================== AUTH MIDDLEWARE ====================
@@ -301,7 +342,8 @@ async function ensurePreferences(userId) {
 }
 
 // ==================== GOOGLE OAUTH HELPERS ====================
-
+// Tiny HTML page that closes the popup and sends the result
+// back to the extension window via postMessage
 function closePopupHTML(token, user, error) {
   const payload = token
     ? JSON.stringify({ type: "FOCUS_TRACKER_AUTH", token, user })
@@ -337,7 +379,9 @@ function closePopupHTML(token, user, error) {
     (function(){
       try {
         if (window.opener && !window.opener.closed) {
-          window.opener.postMessage(${payload}, "*");
+          // Use specific origin if known, else null-origin (extension pages have null origin)
+          const target = window.opener.location?.origin || "*";
+          window.opener.postMessage(${payload}, target);
         }
       } catch(e){ console.error("postMessage failed:", e); }
       // Give the opener 300ms to receive the message, then close
@@ -353,8 +397,12 @@ app.post("/auth/signup", async (req, res) => {
   const { email, password, name } = req.body;
   if (!email || !password)
     return res.status(400).json({ error: "Email and password are required" });
-  if (password.length < 8)
-    return res.status(400).json({ error: "Password must be at least 8 characters" });
+  if (typeof email !== "string" || email.length > 254)
+    return res.status(400).json({ error: "Invalid email address" });
+  if (typeof password !== "string" || password.length < 8 || password.length > 128)
+    return res.status(400).json({ error: "Password must be 8–128 characters" });
+  if (name && (typeof name !== "string" || name.length > 64))
+    return res.status(400).json({ error: "Name must be under 64 characters" });
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))
     return res.status(400).json({ error: "Invalid email address" });
 
@@ -366,9 +414,14 @@ app.post("/auth/signup", async (req, res) => {
     const passwordHash = await bcrypt.hash(password, 12);
     const verifyToken  = crypto.randomBytes(32).toString("hex");
 
+    const safeName = (name || email.split("@")[0])
+      .replace(/[<>"'`]/g, "")   // strip html-injection chars
+      .trim()
+      .slice(0, 64);
+
     const user = await User.create({
       email: email.toLowerCase(), passwordHash,
-      displayName: name || email.split("@")[0],
+      displayName: safeName,
       authMethod: "email", isVerified: false, verifyToken
     });
 
@@ -418,6 +471,10 @@ app.post("/auth/login", async (req, res) => {
   const { email, password } = req.body;
   if (!email || !password)
     return res.status(400).json({ error: "Email and password are required" });
+  if (typeof email !== "string" || email.length > 254)
+    return res.status(400).json({ error: "Invalid email" });
+  if (typeof password !== "string" || password.length > 128)
+    return res.status(400).json({ error: "Invalid password" });
   try {
     const user = await User.findOne({ email: email.toLowerCase() });
     if (!user || !user.passwordHash)
@@ -461,10 +518,12 @@ app.post("/auth/google", async (req, res) => {
 
     let user = await User.findOne({ $or: [{ googleId }, { email }] });
     if (!user) {
+      const safeGoogleName = (name || email.split("@")[0])
+        .replace(/[<>"'`]/g, "").trim().slice(0, 64);
       user = await User.create({
         email: email.toLowerCase(), googleId,
-        displayName: name || email.split("@")[0],
-        avatar, authMethod: "google", isVerified: true
+        displayName: safeGoogleName,
+        avatar: avatar || "", authMethod: "google", isVerified: true
       });
       await ensurePreferences(user._id);
     } else {
@@ -487,7 +546,20 @@ app.post("/auth/google", async (req, res) => {
 });
 
 // ==================== GOOGLE WEB OAUTH POPUP FLOW ====================
+// Works on ALL browsers — Chrome, Edge, Firefox, Opera, Brave, Safari…
+// No chrome.identity needed. Just a standard browser popup + redirect.
+//
+// SETUP REQUIRED:
+//   1. Google Cloud Console → Credentials → Web Application OAuth client
+//   2. Add these Authorized redirect URIs:
+//        https://habit-tracker-extension.onrender.com/auth/google/callback
+//        http://localhost:5000/auth/google/callback
+//   3. Set env vars on Render:
+//        GOOGLE_CLIENT_ID = <your web client id>
+//        PROD_URL = https://habit-tracker-extension.onrender.com
 
+// GET /auth/google/popup — auth.js opens this URL in a small popup window.
+// We immediately redirect to Google's OAuth consent screen.
 app.get("/auth/google/popup", (req, res) => {
   if (!googleClient || !GOOGLE_CLIENT_ID) {
     return res.status(501).send(closePopupHTML(null, null,
@@ -496,8 +568,6 @@ app.get("/auth/google/popup", (req, res) => {
 
   const base        = getServerBase(req);
   const callbackUri = `${base}/auth/google/callback`;
-
-  console.log(`[Google popup] redirect_uri = ${callbackUri}`);
 
   // We encode the callbackUri into `state` so the /callback handler
   // uses the EXACT same redirect_uri for the token exchange.
@@ -547,8 +617,6 @@ app.get("/auth/google/callback", async (req, res) => {
       callbackUri = `${getServerBase(req)}/auth/google/callback`;
     }
 
-    console.log(`[Google callback] exchanging code with redirect_uri = ${callbackUri}`);
-
     // Exchange authorisation code for id_token + access_token
     // redirect_uri must be byte-for-byte identical to what was sent in /popup
     const { tokens } = await googleClient.getToken({ code, redirect_uri: callbackUri });
@@ -568,16 +636,18 @@ app.get("/auth/google/callback", async (req, res) => {
     // Find existing user or create a new one
     let user = await User.findOne({ $or: [{ googleId }, { email: email.toLowerCase() }] });
     if (!user) {
+      const safeCallbackName = (name || email.split("@")[0])
+        .replace(/[<>"'`]/g, "").trim().slice(0, 64);
       user = await User.create({
         email:       email.toLowerCase(),
         googleId,
-        displayName: name || email.split("@")[0],
+        displayName: safeCallbackName,
         avatar:      avatar || "",
         authMethod:  "google",
         isVerified:  true,
       });
       await ensurePreferences(user._id);
-      console.log(`[Google callback] New user created: ${email}`);
+      console.log("[Google callback] New user created via Google OAuth");
     } else {
       // Link Google ID to existing email/password account if needed
       if (!user.googleId) {
@@ -588,7 +658,7 @@ app.get("/auth/google/callback", async (req, res) => {
       user.lastLoginAt = new Date();
       user.avatar      = avatar || user.avatar;
       await user.save();
-      console.log(`[Google callback] Existing user signed in: ${email}`);
+      console.log("[Google callback] Existing user signed in via Google OAuth");
     }
 
     const token = createAuthToken(user._id.toString());
@@ -606,46 +676,56 @@ app.get("/auth/google/callback", async (req, res) => {
   }
 });
 
-// GET /auth/google/debug — visit in browser to verify config
-// Remove or restrict this route before going public
+// GET /auth/google/debug — LOCAL DEV ONLY. Disabled in production.
 app.get("/auth/google/debug", (req, res) => {
+  if (process.env.NODE_ENV === "production") {
+    return res.status(404).json({ error: "Not found" });
+  }
   const base = getServerBase(req);
   res.json({
     GOOGLE_CLIENT_ID_set:     !!GOOGLE_CLIENT_ID,
-    GOOGLE_CLIENT_ID_preview: GOOGLE_CLIENT_ID ? `${GOOGLE_CLIENT_ID.slice(0, 14)}…` : "NOT SET",
     GOOGLE_CLIENT_SECRET_set: !!GOOGLE_CLIENT_SECRET,
-    PROD_URL_env:             process.env.PROD_URL || "NOT SET (will derive from request)",
-    derived_base_url:         base,
     redirect_uri_will_be:     `${base}/auth/google/callback`,
-    action: "Add the redirect_uri_will_be value to Google Cloud Console → Authorized redirect URIs",
+    note: "This route is disabled in production (NODE_ENV=production)",
   });
 });
 
 // ==================== OTHER AUTH ROUTES ====================
 app.post("/auth/forgot-password", async (req, res) => {
-  console.log("🔥 FORGOT PASSWORD ROUTE HIT");
-  console.log("SERVER ENV:", process.env.NODE_ENV);
-console.log("EMAIL_USER:", process.env.EMAIL_USER);
   const { email } = req.body;
-  if (!email) return res.status(400).json({ error: "Email required" });
+  if (!email || typeof email !== "string" || email.length > 254)
+    return res.status(400).json({ error: "Valid email required" });
   try {
     const user = await User.findOne({ email: email.toLowerCase() });
-    if (!user || !user.passwordHash)
+
+    // User not found — return generic message (don't reveal whether email exists)
+    if (!user) {
+      console.log("⚠️  No user found for:", email);
       return res.json({ success: true, message: "If that email exists, a reset code was sent." });
+    }
+
+    // Google-only account — has no password to reset, tell them clearly
+    if (!user.passwordHash) {
+      console.log("⚠️  Account is Google-only, no password to reset:", email);
+      return res.status(400).json({
+        error: "This account uses Google Sign-In. Please click 'Continue with Google' to log in — there is no password to reset."
+      });
+    }
+
     const otp       = generateOTP();
     const otpHash   = hashOTP(otp);
     const otpExpiry = new Date(Date.now() + 10 * 60 * 1000);
     user.resetToken       = otpHash;
     user.resetTokenExpiry = otpExpiry;
     await user.save();
-    console.log("📨 Sending reset email to:", email);
-console.log("🔐 OTP:", otp);
-await sendPasswordResetEmail(email, otp);
-console.log("✅ Email sent successfully");
-    res.json({ success: true, message: "If that email exists, a reset code was sent." });
+
+    await sendPasswordResetEmail(email, otp);
+    console.log("✅ Password reset email dispatched");
+
+    res.json({ success: true, message: "Reset code sent! Check your inbox." });
   } catch (err) {
-    console.error("Forgot password error:", err);
-    res.status(500).json({ error: "Failed to send reset email" });
+    console.error("❌ Forgot password error:", err.message);
+    res.status(500).json({ error: "Failed to send reset email. Please try again." });
   }
 });
 
@@ -653,8 +733,12 @@ app.post("/auth/reset-password", async (req, res) => {
   const { email, otp, newPassword } = req.body;
   if (!email || !otp || !newPassword)
     return res.status(400).json({ error: "Email, OTP and new password are required" });
-  if (newPassword.length < 8)
-    return res.status(400).json({ error: "Password must be at least 8 characters" });
+  if (typeof email !== "string" || email.length > 254)
+    return res.status(400).json({ error: "Invalid email" });
+  if (typeof otp !== "string" || !/^\d{6}$/.test(otp))
+    return res.status(400).json({ error: "OTP must be a 6-digit number" });
+  if (typeof newPassword !== "string" || newPassword.length < 8 || newPassword.length > 128)
+    return res.status(400).json({ error: "Password must be 8–128 characters" });
   try {
     const user = await User.findOne({ email: email.toLowerCase() });
     if (!user || !user.resetToken || !user.resetTokenExpiry)
@@ -713,10 +797,12 @@ app.get("/blocked-sites", authenticateToken, async (req, res) => {
 
 app.post("/blocked-sites", authenticateToken, async (req, res) => {
   const { site } = req.body;
-  console.log(`POST /blocked-sites — userId: ${req.userId} — site: ${site}`);
-  if (!site) return res.status(400).json({ error: "No site provided" });
+  if (!site || typeof site !== "string")
+    return res.status(400).json({ error: "No site provided" });
+  if (site.length > 253)
+    return res.status(400).json({ error: "Domain too long" });
   const normalized = normalizeDomain(site);
-  if (!normalized || normalized.length < 2)
+  if (!normalized || normalized.length < 4)
     return res.status(400).json({ error: "Invalid site URL" });
   try {
     await BlockedSite.updateOne(
@@ -724,12 +810,12 @@ app.post("/blocked-sites", authenticateToken, async (req, res) => {
       { $set: { userId: req.userId, site: normalized } },
       { upsert: true }
     );
-    console.log(`✅ Blocked site saved: ${normalized}`);
+    console.log("✅ Blocked site saved");
     res.json({ success: true, site: normalized });
   } catch (err) {
     if (err.code === 11000) return res.json({ success: true, site: normalized });
     console.error(`❌ POST /blocked-sites error — code: ${err.code} — message: ${err.message}`);
-    res.status(500).json({ error: "Failed to save blocked site", detail: err.message });
+    res.status(500).json({ error: "Failed to save blocked site" });
   }
 });
 
@@ -762,6 +848,10 @@ app.post("/categories", authenticateToken, async (req, res) => {
   const { domain, category } = req.body;
   if (!domain || !category)
     return res.status(400).json({ error: "Domain and category required" });
+  if (typeof domain !== "string" || domain.length > 253)
+    return res.status(400).json({ error: "Invalid domain" });
+  if (typeof category !== "string")
+    return res.status(400).json({ error: "Invalid category" });
 
   const validCategories = ["Learning", "Development", "Distraction", "Other"];
   if (!validCategories.includes(category))
@@ -777,7 +867,7 @@ app.post("/categories", authenticateToken, async (req, res) => {
       { $set: { userId: req.userId, domain: normalized, category, updatedAt: new Date() } },
       { upsert: true }
     );
-    console.log(`✅ Category saved: ${normalized} → ${category}`);
+    console.log("✅ Category mapping saved");
     res.json({ success: true, domain: normalized, category });
   } catch (err) {
     if (err.code === 11000) return res.json({ success: true, domain: normalized, category });
@@ -789,7 +879,7 @@ app.post("/categories", authenticateToken, async (req, res) => {
 app.delete("/categories/:domain", authenticateToken, async (req, res) => {
   const domain     = decodeURIComponent(req.params.domain);
   const normalized = normalizeDomain(domain);
-  console.log(`DELETE /categories/${normalized} for user ${req.userId}`);
+
   try {
     const result = await CategoryMapping.deleteOne({ userId: req.userId, domain: normalized });
     if (result.deletedCount === 0) {
@@ -896,7 +986,7 @@ function startSelfPing(url) {
 // ==================== START ====================
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
-  console.log(`   Auth: email/password ${GOOGLE_CLIENT_ID ? "+ Google OAuth (web popup) ✅" : "(set GOOGLE_CLIENT_ID for Google login)"}`);
+  console.log(`   Auth: email/password ${GOOGLE_CLIENT_ID ? "+ Google OAuth ✅" : "(GOOGLE_CLIENT_ID not set)"}`);
   if (GOOGLE_CLIENT_ID && !GOOGLE_CLIENT_SECRET) {
     console.warn("   ⚠️  GOOGLE_CLIENT_SECRET not set — Google OAuth code exchange will fail!");
   }
