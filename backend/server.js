@@ -51,6 +51,7 @@ const defaultOrigins = [
   "http://localhost:5000",
   "http://localhost:3000",
   "https://habit-tracker-extension.onrender.com",
+  "habit-tracker-extension-production.up.railway.app",
 ];
 const allowedOrigins = ALLOWED_ORIGINS
   ? ALLOWED_ORIGINS.split(",").map(s => s.trim())
