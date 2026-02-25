@@ -1,4 +1,3 @@
-
 /* =========================================================
    KEEPALIVE
 ========================================================= */
@@ -110,13 +109,12 @@ function getAuthHeaders() {
     : { "Content-Type": "application/json" };
 }
 
-
 function getUserId() {
   if (!authToken) return "default";
   try {
     const payload = authToken.split(".")[0];
     const decoded = atob(payload.replace(/-/g, "+").replace(/_/g, "/"));
-    return decoded.split(".")[0]; // userId segment before the dot
+    return decoded.split(".")[0];
   } catch {
     return authToken.slice(0, 16);
   }
@@ -138,7 +136,7 @@ async function flushBufferToStorage() {
   const today    = getTodayKey();
   const captured = { ...bufferTime };
   bufferTime     = {};
-  const key      = timeDataKey(); // scoped per user
+  const key      = timeDataKey();
   const timeData = await new Promise((resolve) =>
     chrome.storage.local.get([key], (res) => resolve(res[key] || {}))
   );
@@ -157,8 +155,6 @@ setInterval(flushBufferToStorage, 3000);
 
 /* =========================================================
    CATEGORY SYNC
-   Uses /categories endpoint which returns flat {domain, category}
-   pairs — compatible with both old and new server schema.
 ========================================================= */
 async function syncCategoriesFromServer() {
   const token = await loadAuthToken();
@@ -179,7 +175,7 @@ async function syncCategoriesFromServer() {
 
 loadAuthToken().then(() => {
   syncCategoriesFromServer();
-  setInterval(syncCategoriesFromServer, 1800000); // refresh every 30 min
+  setInterval(syncCategoriesFromServer, 1800000);
 });
 
 /* =========================================================
@@ -235,10 +231,10 @@ function notify(message) {
 }
 
 /* =========================================================
-   BLOCKED SITES — read from user-scoped local storage key
+   BLOCKED SITES
 ========================================================= */
 async function getBlockedSites() {
-  const key = blockedSitesKey(); // scoped per user
+  const key = blockedSitesKey();
   return new Promise((resolve) => {
     chrome.storage.local.get([key], (d) => {
       void chrome.runtime.lastError;
@@ -254,24 +250,48 @@ function isBlockedUrl(url, blockedSites) {
   } catch { return false; }
 }
 
+/* =========================================================
+   BUILD BLOCK RULES
+   FIX: Each rule's redirect now includes ?site=<domain> so
+   blocked.html can display which site was blocked.
+   We use extensionPath + a transform approach: since
+   declarativeNetRequest redirect.extensionPath cannot be
+   dynamic per-domain, we instead redirect to a generic path
+   and rely on a webNavigation listener to rewrite the URL
+   with the actual origin, OR we use the simpler approach of
+   one rule per site with a unique extensionPath query string.
 
+   declarativeNetRequest supports redirect.extensionPath as a
+   static string only — it cannot interpolate the blocked URL.
+   SOLUTION: redirect to blocked.html?site=DOMAIN by encoding
+   each site's domain into its own rule's extensionPath string.
+   This is fully supported in MV3.
+========================================================= */
 async function enableBlocking() {
   const sites = await getBlockedSites();
 
-  // Build the rule array from the current blocked sites list
+  // One rule per blocked site; each redirect carries ?site=<domain>
+  // so blocked.html always knows which site was blocked.
   const addRules = sites.slice(0, MAX_RULES).map((site, i) => ({
     id:       BASE_RULE_ID + i,
     priority: 1,
-    action:   { type: "redirect", redirect: { extensionPath: "/blocked.html" } },
-    condition: { urlFilter: `||${site}^`, resourceTypes: ["main_frame"] }
+    action: {
+      type: "redirect",
+      redirect: {
+        // Pass the blocked domain as a query param — blocked.html reads ?site=
+        extensionPath: `/blocked.html?site=${encodeURIComponent(site)}`
+      }
+    },
+    condition: {
+      urlFilter:     `||${site}^`,
+      resourceTypes: ["main_frame"]
+    }
   }));
 
-  // Remove ALL existing rules first, then add fresh ones atomically
-  // FIX: `removeIds` is declared AND used with the same name — no undefined variable
   const removeIds = Array.from({ length: MAX_RULES }, (_, i) => BASE_RULE_ID + i);
 
   await chrome.declarativeNetRequest.updateDynamicRules({
-    removeRuleIds: removeIds,   // ← was: removeRuleIds (undefined) before fix
+    removeRuleIds: removeIds,
     addRules
   });
 
@@ -280,12 +300,10 @@ async function enableBlocking() {
 }
 
 async function disableBlocking() {
-  // Remove ALL dynamic rules — no blocked sites in any state
-  // FIX: `removeIds` is declared AND used with the same name — no undefined variable
   const removeIds = Array.from({ length: MAX_RULES }, (_, i) => BASE_RULE_ID + i);
 
   await chrome.declarativeNetRequest.updateDynamicRules({
-    removeRuleIds: removeIds,   // ← was: removeRuleIds (undefined) before fix
+    removeRuleIds: removeIds,
     addRules: []
   });
 
@@ -311,10 +329,8 @@ async function startFocus(durationMinutes, hard) {
     focusLockUntil:  focusLockUntil
   });
 
-  // Install DNR rules, get back the list so we can reload affected tabs
   const blockedSites = await enableBlocking();
 
-  // Reload tabs that are on blocked sites so they see blocked.html immediately
   if (blockedSites.length > 0) {
     chrome.tabs.query({ windowType: "normal" }, (tabs) => {
       if (chrome.runtime.lastError) return;
@@ -337,7 +353,6 @@ async function startFocus(durationMinutes, hard) {
     pomodoroTimer = setTimeout(() => stopFocus(true), durationMs);
   }
 
-  // Sync blocked list from server in background (refreshes local cache + rules)
   syncBlockedSitesInBackground();
 }
 
@@ -359,10 +374,8 @@ async function stopFocus(force) {
     focusLockUntil:  0
   });
 
-  // Remove ALL blocking rules — every site accessible again
   await disableBlocking();
 
-  // Reload tabs stuck on blocked.html → send them back
   const extId = chrome.runtime.id;
   chrome.tabs.query({ windowType: "normal" }, (tabs) => {
     if (chrome.runtime.lastError) return;
@@ -379,8 +392,6 @@ async function stopFocus(force) {
 
 /* =========================================================
    BACKGROUND SERVER SYNC FOR BLOCKED SITES
-   Pulls from server and merges with user-scoped local cache.
-   If focus is currently ON, refreshes rules to include new sites.
 ========================================================= */
 async function syncBlockedSitesInBackground() {
   const token = await loadAuthToken();
@@ -396,10 +407,8 @@ async function syncBlockedSitesInBackground() {
 
     const local  = await getBlockedSites();
     const merged = [...new Set([...serverSites, ...local])].sort();
-    // Store under the user-scoped key so accounts never share blocked lists
     await new Promise((r) => chrome.storage.local.set({ [blockedSitesKey()]: merged }, r));
 
-    // If focus is on, refresh rules to include newly synced sites
     if (focusModeOn) await enableBlocking();
   } catch (err) {
     console.warn("syncBlockedSitesInBackground failed:", err.message);
@@ -413,7 +422,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   (async () => {
     const now = Date.now();
 
-    /* Google OAuth via chrome.identity */
     if (msg.type === "GOOGLE_AUTH") {
       try {
         if (!chrome.identity) { sendResponse({ success: false, error: "chrome.identity not available" }); return; }
@@ -472,11 +480,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       return;
     }
 
-    /* Dashboard blocked a new site — refresh rules if focus is on */
     if (msg.type === "ADD_BLOCK_SITE") {
       if (focusModeOn) {
         const blockedSites = await enableBlocking();
-        // Reload any tabs now on a blocked site
         chrome.tabs.query({ windowType: "normal" }, (tabs) => {
           if (chrome.runtime.lastError) return;
           (tabs || []).forEach((tab) => {
@@ -489,9 +495,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       return;
     }
 
-    /* Dashboard removed a site — refresh rules if focus is on */
     if (msg.type === "REMOVE_BLOCK_SITE") {
-      if (focusModeOn) await enableBlocking(); // rebuilds rules without removed site
+      if (focusModeOn) await enableBlocking();
       sendResponse({ success: true });
       return;
     }
@@ -515,7 +520,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       hardFocusActive = false;
       focusLockUntil  = 0;
 
-      // Capture scoped keys BEFORE clearing authToken
       const bsKey  = blockedSitesKey();
       const catKey = `catCustomizations_${getUserId()}`;
 
@@ -525,9 +529,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       await disableBlocking();
       chrome.storage.local.remove([
         "authToken", "lastValidated", "userInfo",
-        bsKey,   // user-scoped blocked sites
-        // timeData_<userId> is intentionally NOT removed so browsing
-        // history is preserved and visible again on next login
+        bsKey,
         "focusMode", "hardFocusActive", "focusLockUntil",
         catKey, "_sw_heartbeat"
       ]);
@@ -535,7 +537,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       return;
     }
   })();
-  return true; // keep message channel open for async sendResponse
+  return true;
 });
 
 chrome.runtime.onStartup.addListener(restoreState);
@@ -548,14 +550,13 @@ async function restoreState() {
     chrome.storage.local.get(["focusMode", "hardFocusActive", "focusLockUntil"], resolve)
   );
 
-  const now          = Date.now();
-  const wasOn        = !!data.focusMode;
-  const wasHard      = !!data.hardFocusActive;
-  const lockUntil    = data.focusLockUntil || 0;
-  const hardExpired  = wasHard && now >= lockUntil;
+  const now         = Date.now();
+  const wasOn       = !!data.focusMode;
+  const wasHard     = !!data.hardFocusActive;
+  const lockUntil   = data.focusLockUntil || 0;
+  const hardExpired = wasHard && now >= lockUntil;
 
   if (wasOn && !(wasHard && hardExpired)) {
-    // Resume active focus session
     focusModeOn     = true;
     hardFocusActive = wasHard && now < lockUntil;
     focusLockUntil  = lockUntil;
@@ -567,7 +568,6 @@ async function restoreState() {
     }
     console.log("[Focus] Restored: focus ON", wasHard ? `locked until ${new Date(lockUntil).toLocaleTimeString()}` : "");
   } else {
-    // Focus off or hard lock expired while browser was closed
     focusModeOn     = false;
     hardFocusActive = false;
     focusLockUntil  = 0;
@@ -578,11 +578,9 @@ async function restoreState() {
 
   updateBadge();
 
-  // Background syncs — safe, won't break anything
   syncCategoriesFromServer().catch(console.error);
   syncBlockedSitesInBackground().catch(console.error);
 
-  // Grab current active tab
   chrome.tabs.query({ active: true, lastFocusedWindow: true }, (tabs) => {
     if (chrome.runtime.lastError || !tabs?.[0]?.url) return;
     const d = getDomain(tabs[0].url);
@@ -590,7 +588,6 @@ async function restoreState() {
   });
 }
 
-/* Re-sync categories when auth token changes (e.g. after login) */
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area === "local" && changes.authToken) {
     loadAuthToken().then(() => syncCategoriesFromServer());

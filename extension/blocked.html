@@ -10,7 +10,7 @@
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
-    /* ── Design tokens — same as dashboard ── */
+    /* ── Design tokens ── */
     :root {
       --bg:          #f5f3ef;
       --bg-card:     #fdfcfa;
@@ -29,7 +29,14 @@
       --r:           14px;
       --r-lg:        20px;
     }
-    [data-theme="dark"] {
+
+    /*
+     * Dashboard sets data-theme / data-accent on document.BODY via applyTheme().
+     * We must match that — target body (and html as fallback) so CSS vars resolve
+     * correctly regardless of which element the attribute lands on.
+     */
+    body[data-theme="dark"],
+    html[data-theme="dark"] {
       --bg:          #111210;
       --bg-card:     #18191a;
       --bg-raised:   #1f2022;
@@ -42,12 +49,13 @@
       --shadow-md:   0 8px 32px rgba(0,0,0,.5);
       --shadow-lg:   0 24px 72px rgba(0,0,0,.7);
     }
-    [data-accent="blue"]   { --accent:#2563eb; --accent-soft:rgba(37,99,235,.08);  --accent-grad:linear-gradient(135deg,#2563eb,#1d4ed8); }
-    [data-accent="green"]  { --accent:#16a34a; --accent-soft:rgba(22,163,74,.08);  --accent-grad:linear-gradient(135deg,#16a34a,#15803d); }
-    [data-accent="purple"] { --accent:#7c3aed; --accent-soft:rgba(124,58,237,.08); --accent-grad:linear-gradient(135deg,#7c3aed,#6d28d9); }
-    [data-accent="red"]    { --accent:#dc2626; --accent-soft:rgba(220,38,38,.08);  --accent-grad:linear-gradient(135deg,#dc2626,#b91c1c); }
-    [data-accent="orange"] { --accent:#ea580c; --accent-soft:rgba(234,88,12,.08);  --accent-grad:linear-gradient(135deg,#ea580c,#c2410c); }
-    [data-accent="indigo"] { --accent:#4f46e5; --accent-soft:rgba(79,70,229,.08);  --accent-grad:linear-gradient(135deg,#4f46e5,#7c3aed); }
+
+    body[data-accent="blue"],   html[data-accent="blue"]   { --accent:#2563eb; --accent-soft:rgba(37,99,235,.08);  --accent-grad:linear-gradient(135deg,#2563eb,#1d4ed8); }
+    body[data-accent="green"],  html[data-accent="green"]  { --accent:#16a34a; --accent-soft:rgba(22,163,74,.08);  --accent-grad:linear-gradient(135deg,#16a34a,#15803d); }
+    body[data-accent="purple"], html[data-accent="purple"] { --accent:#7c3aed; --accent-soft:rgba(124,58,237,.08); --accent-grad:linear-gradient(135deg,#7c3aed,#6d28d9); }
+    body[data-accent="red"],    html[data-accent="red"]    { --accent:#dc2626; --accent-soft:rgba(220,38,38,.08);  --accent-grad:linear-gradient(135deg,#dc2626,#b91c1c); }
+    body[data-accent="orange"], html[data-accent="orange"] { --accent:#ea580c; --accent-soft:rgba(234,88,12,.08);  --accent-grad:linear-gradient(135deg,#ea580c,#c2410c); }
+    body[data-accent="indigo"], html[data-accent="indigo"] { --accent:#4f46e5; --accent-soft:rgba(79,70,229,.08);  --accent-grad:linear-gradient(135deg,#4f46e5,#7c3aed); }
 
     /* ── Page ── */
     body {
@@ -65,7 +73,6 @@
       transition: background .3s, color .3s;
     }
 
-    /* Atmospheric background blobs */
     .bg-blob {
       position: fixed;
       border-radius: 50%;
@@ -108,8 +115,6 @@
       from { opacity:0; transform:translateY(24px) scale(.96); }
       to   { opacity:1; transform:none; }
     }
-
-    /* Top gradient bar */
     .card::before {
       content: '';
       position: absolute;
@@ -119,7 +124,7 @@
       border-radius: var(--r-lg) var(--r-lg) 0 0;
     }
 
-    /* ── Shield icon ── */
+    /* ── Shield ── */
     .shield {
       width: 80px; height: 80px;
       margin: 0 auto 24px;
@@ -173,7 +178,7 @@
       line-height: 1.65; margin-bottom: 28px;
     }
 
-    /* ── Blocked domain chip ── */
+    /* ── Domain chip ── */
     .domain-chip {
       display: inline-flex; align-items: center; gap: 7px;
       padding: 8px 16px;
@@ -187,10 +192,7 @@
     .domain-chip-icon { opacity: .5; font-size: 12px; }
 
     /* ── Divider ── */
-    .divider {
-      height: 1px; background: var(--border);
-      margin: 0 0 24px;
-    }
+    .divider { height: 1px; background: var(--border); margin: 0 0 24px; }
 
     /* ── Quote ── */
     .quote-wrap {
@@ -213,7 +215,7 @@
       text-transform: uppercase;
     }
 
-    /* ── Suggestions grid ── */
+    /* ── Suggestions ── */
     .suggestions {
       display: grid;
       grid-template-columns: 1fr 1fr;
@@ -236,13 +238,8 @@
       box-shadow: var(--shadow-sm);
     }
     .suggestion-icon { font-size: 20px; margin-bottom: 6px; }
-    .suggestion-title {
-      font-size: 12.5px; font-weight: 600;
-      color: var(--text); margin-bottom: 2px;
-    }
-    .suggestion-desc {
-      font-size: 11.5px; color: var(--text-3); line-height: 1.4;
-    }
+    .suggestion-title { font-size: 12.5px; font-weight: 600; color: var(--text); margin-bottom: 2px; }
+    .suggestion-desc  { font-size: 11.5px; color: var(--text-3); line-height: 1.4; }
 
     /* ── Footer ── */
     .card-footer {
@@ -256,12 +253,10 @@
 </head>
 <body>
 
-  <!-- Background blobs -->
   <div class="bg-blob bg-blob-1"></div>
   <div class="bg-blob bg-blob-2"></div>
 
   <div class="card">
-
     <div class="shield">🛡</div>
 
     <div class="badge">
@@ -283,9 +278,7 @@
     <div class="divider"></div>
 
     <div class="quote-wrap">
-      <div class="quote-text" id="quoteText">
-        "The successful warrior is the average man, with laser-like focus."
-      </div>
+      <div class="quote-text" id="quoteText">"The successful warrior is the average man, with laser-like focus."</div>
       <div class="quote-author" id="quoteAuthor">— Bruce Lee</div>
     </div>
 
@@ -317,29 +310,44 @@
       <span class="accent">Focus Tracker</span> to keep you on track.
       Stay the course — you've got this.
     </div>
-
   </div>
 
   <script src="config.js"></script>
   <script>
-    // Apply saved theme from extension storage
+    // ─── 1. THEME ────────────────────────────────────────────────────────────
+    // The dashboard's applyTheme() sets data-theme / data-accent on document.body
+    // and saves them to chrome.storage.local as { theme, accentColor }.
+    // We mirror that exactly here: set both <html> and <body> to cover both paths.
     if (typeof chrome !== 'undefined' && chrome.storage) {
       chrome.storage.local.get(['theme', 'accentColor'], (d) => {
-        const html   = document.documentElement;
         const theme  = d.theme       || 'light';
         const accent = d.accentColor || 'indigo';
-        if (theme === 'dark') html.setAttribute('data-theme', 'dark');
-        html.setAttribute('data-accent', accent);
+        // Set on BOTH elements — body matches dashboard, html is fallback
+        document.documentElement.setAttribute('data-theme',  theme);
+        document.documentElement.setAttribute('data-accent', accent);
+        document.body.setAttribute('data-theme',  theme);
+        document.body.setAttribute('data-accent', accent);
       });
     }
 
-    // Show current blocked domain
-    try {
-      const host = location.hostname || new URLSearchParams(location.search).get('site');
-      if (host) document.getElementById('blockedDomain').textContent = host;
-    } catch {}
+    // ─── 2. BLOCKED DOMAIN ───────────────────────────────────────────────────
+    // The background redirect sends the original URL as: blocked.html?site=youtube.com
+    // We CANNOT use location.hostname — that returns the extension's own host ID.
+    // We CANNOT use location.href's actual host for the same reason.
+    // The only reliable source is the ?site= query parameter injected by background.js.
+    (function () {
+      try {
+        const params = new URLSearchParams(location.search);
+        const site   = params.get('site');
+        if (site && site.length > 0) {
+          document.getElementById('blockedDomain').textContent = site;
+        }
+      } catch (e) {
+        // leave default "this site" text
+      }
+    })();
 
-    // Rotating quotes
+    // ─── 3. ROTATING QUOTES ──────────────────────────────────────────────────
     const quotes = [
       { text: "The successful warrior is the average man, with laser-like focus.", author: "Bruce Lee" },
       { text: "It's not that I'm so smart, it's just that I stay with problems longer.", author: "Albert Einstein" },

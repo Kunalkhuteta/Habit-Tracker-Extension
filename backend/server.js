@@ -7,7 +7,6 @@ import express         from "express";
 import mongoose        from "mongoose";
 import cors            from "cors";
 import crypto          from "crypto";
-import nodemailer      from "nodemailer";
 import bcrypt          from "bcryptjs";
 import rateLimit       from "express-rate-limit";
 import { OAuth2Client } from "google-auth-library";
@@ -51,7 +50,7 @@ const defaultOrigins = [
   "http://localhost:5000",
   "http://localhost:3000",
   "https://habit-tracker-extension.onrender.com",
-  "habit-tracker-extension-production.up.railway.app",
+
 ];
 const allowedOrigins = ALLOWED_ORIGINS
   ? ALLOWED_ORIGINS.split(",").map(s => s.trim())
@@ -126,30 +125,18 @@ mongoose
   .catch(err => console.error("❌ MongoDB error:", err.message));
 
 // ─────────────────────────────────────────────
-// EMAIL (Gmail SMTP)
+// EMAIL (Brevo API)
 // ─────────────────────────────────────────────
-let transporter = null;
-if (EMAIL_USER && EMAIL_PASSWORD) {
-  const cleanPass = EMAIL_PASSWORD.replace(/\s/g, "");
-  transporter = nodemailer.createTransport({
-    host: "smtp.gmail.com",
-    port: 465,
-    secure: true,
-    auth: { user: EMAIL_USER, pass: cleanPass },
-    pool: true,          // reuse connections — faster & avoids repeated handshakes
-    maxConnections: 3,
-  });
-  transporter.verify((err) => {
-    if (err) {
-      console.error("❌ Gmail SMTP verify FAILED:", err.message);
-      console.error("   → Go to myaccount.google.com → Security → App Passwords");
-    } else {
-      console.log("✅ Gmail SMTP ready");
-    }
-  });
+import { BrevoClient } from "@getbrevo/brevo";
+
+let brevo = null;
+if (process.env.BREVO_API_KEY) {
+  brevo = new BrevoClient({ apiKey: process.env.BREVO_API_KEY });
+  console.log("✅ Brevo mailer initialized");
 } else {
-  console.warn("⚠️  EMAIL_USER / EMAIL_PASSWORD not set — email features disabled");
+  console.warn("⚠️  BREVO_API_KEY not set — email features disabled");
 }
+
 
 // ─────────────────────────────────────────────
 // GOOGLE OAUTH CLIENT
@@ -343,13 +330,13 @@ function normalizeDomain(raw) {
 const BASE_URL = PROD_URL || `http://localhost:${PORT}`;
 
 async function sendVerificationEmail(email, token) {
-  if (!transporter) return;
+  if (!brevo) return;
   const link = `${BASE_URL}/auth/verify-email?token=${token}`;
-  await transporter.sendMail({
-    from:    `"Focus Tracker" <${EMAIL_USER}>`,
-    to:      email,
+  await brevo.transactionalEmails.sendTransacEmail({
+    to: [{ email }],
+    sender: { email: EMAIL_USER || "noreply@focustracker.com", name: "Focus Tracker" },
     subject: "Verify your Focus Tracker account",
-    html: `
+    htmlContent: `
       <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;">
         <h2 style="color:#4f46e5;">⏱️ Welcome to Focus Tracker!</h2>
         <p>Click the button below to verify your email.</p>
@@ -364,12 +351,12 @@ async function sendVerificationEmail(email, token) {
 }
 
 async function sendPasswordResetEmail(email, otp) {
-  if (!transporter) throw new Error("Email service not configured");
-  await transporter.sendMail({
-    from:    `"Focus Tracker" <${EMAIL_USER}>`,
-    to:      email,
+  if (!brevo) throw new Error("Email service not configured");
+  await brevo.transactionalEmails.sendTransacEmail({
+    to: [{ email }],
+    sender: { email: EMAIL_USER || "noreply@focustracker.com", name: "Focus Tracker" },
     subject: "Reset your Focus Tracker password",
-    html: `
+    htmlContent: `
       <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;">
         <h2 style="color:#4f46e5;">⏱️ Password Reset</h2>
         <p>Your one-time reset code (expires in 10 minutes):</p>
@@ -1088,7 +1075,7 @@ app.get("/health", (req, res) => {
     status:    "ok",
     timestamp: new Date().toISOString(),
     db:        mongoose.connection.readyState === 1 ? "connected" : "disconnected",
-    email:     transporter ? "configured" : "disabled",
+    email:     brevo  ? "configured" : "disabled",
     google:    googleClient ? "configured" : "not configured",
   });
 });
@@ -1119,7 +1106,7 @@ app.listen(PORT, () => {
   console.log(`\n🚀 Focus Tracker server running on port ${PORT}`);
   console.log(`   Environment : ${process.env.NODE_ENV || "development"}`);
   console.log(`   Database    : ${MONGODB_URI ? "MongoDB Atlas" : "localhost"}`);
-  console.log(`   Email       : ${transporter ? EMAIL_USER : "disabled"}`);
+  console.log(`   Email       : ${brevo  ? EMAIL_USER : "disabled"}`);
   console.log(`   Google OAuth: ${googleClient ? "enabled" : "disabled (set GOOGLE_CLIENT_ID + GOOGLE_CLIENT_SECRET)"}`);
   console.log(`   Public URL  : ${PROD_URL || "(not set — derived from request headers)"}\n`);
   startKeepAlive();
