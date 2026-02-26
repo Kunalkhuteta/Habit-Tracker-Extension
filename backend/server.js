@@ -3,13 +3,14 @@
 // JWT auth, rate limiting, security headers, input validation
 
 import "dotenv/config";
-import express         from "express";
-import mongoose        from "mongoose";
-import cors            from "cors";
-import crypto          from "crypto";
-import bcrypt          from "bcryptjs";
-import rateLimit       from "express-rate-limit";
+import express from "express";
+import mongoose from "mongoose";
+import cors from "cors";
+import crypto from "crypto";
+import bcrypt from "bcryptjs";
+import rateLimit from "express-rate-limit";
 import { OAuth2Client } from "google-auth-library";
+
 
 // ─────────────────────────────────────────────
 // ENV VALIDATION — crash fast on missing secrets
@@ -43,6 +44,7 @@ if (process.env.NODE_ENV === "production" && !PROD_URL) {
 const app = express();
 app.set("trust proxy", 1); // Required on Render/Heroku — trusts X-Forwarded-* headers
 
+
 // ─────────────────────────────────────────────
 // CORS
 // ─────────────────────────────────────────────
@@ -73,6 +75,13 @@ app.use(cors({
 }));
 
 app.use(express.json({ limit: "10kb" }));
+
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+app.use(express.static(join(__dirname, 'public')));
+
 
 // ─────────────────────────────────────────────
 // SECURITY HEADERS
@@ -110,11 +119,11 @@ const apiLimiter = rateLimit({
 
 // Apply per-route: tightest limits on password/OTP routes
 app.use("/auth/forgot-password", strictLimiter);
-app.use("/auth/reset-password",  strictLimiter);
-app.use("/auth/signup",          authLimiter);
-app.use("/auth/login",           authLimiter);
-app.use("/auth",                 authLimiter); // catch-all for remaining /auth routes
-app.use("/",                     apiLimiter);
+app.use("/auth/reset-password", strictLimiter);
+app.use("/auth/signup", authLimiter);
+app.use("/auth/login", authLimiter);
+app.use("/auth", authLimiter); // catch-all for remaining /auth routes
+app.use("/", apiLimiter);
 
 // ─────────────────────────────────────────────
 // MONGODB
@@ -153,56 +162,68 @@ if (GOOGLE_CLIENT_ID && !GOOGLE_CLIENT_SECRET) {
 // SCHEMAS & MODELS
 // ─────────────────────────────────────────────
 const userSchema = new mongoose.Schema({
-  email:            { type: String, unique: true, sparse: true, lowercase: true, trim: true },
-  passwordHash:     { type: String, default: null },
-  googleId:         { type: String, unique: true, sparse: true },
-  displayName:      { type: String, default: "", maxlength: 64 },
-  avatar:           { type: String, default: "" },
-  authMethod:       { type: String, enum: ["email", "google", "both"], default: "email" },
-  isVerified:       { type: Boolean, default: false },
-  verifyToken:      { type: String, default: null, select: false },
-  resetToken:       { type: String, default: null, select: false },
-  resetTokenExpiry: { type: Date,   default: null, select: false },
-  createdAt:        { type: Date,   default: Date.now },
-  lastLoginAt:      { type: Date,   default: Date.now },
+  email: { type: String, unique: true, sparse: true, lowercase: true, trim: true },
+  passwordHash: { type: String, default: null },
+  googleId: { type: String, unique: true, sparse: true },
+  displayName: { type: String, default: "", maxlength: 64 },
+  avatar: { type: String, default: "" },
+  authMethod: { type: String, enum: ["email", "google", "both"], default: "email" },
+  isVerified: { type: Boolean, default: false },
+  verifyToken: { type: String, default: null, select: false },
+  resetToken: { type: String, default: null, select: false },
+  resetTokenExpiry: { type: Date, default: null, select: false },
+  createdAt: { type: Date, default: Date.now },
+  lastLoginAt: { type: Date, default: Date.now },
 });
 
 const blockedSiteSchema = new mongoose.Schema({
   userId: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
-  site:   { type: String, required: true, maxlength: 253 },
+  site: { type: String, required: true, maxlength: 253 },
 });
 blockedSiteSchema.index({ userId: 1, site: 1 }, { unique: true });
 
 const categoryMappingSchema = new mongoose.Schema({
-  userId:    { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
-  domain:    { type: String, required: true, maxlength: 253 },
-  category:  { type: String, required: true },
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
+  domain: { type: String, required: true, maxlength: 253 },
+  category: { type: String, required: true },
   updatedAt: { type: Date, default: Date.now },
 });
 categoryMappingSchema.index({ userId: 1, domain: 1 }, { unique: true });
 
 const reflectionSchema = new mongoose.Schema({
-  userId:       { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
-  date:         { type: String, required: true, maxlength: 10 },
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
+  date: { type: String, required: true, maxlength: 10 },
   distractions: { type: String, default: "", maxlength: 2000 },
-  wentWell:     { type: String, default: "", maxlength: 2000 },
+  wentWell: { type: String, default: "", maxlength: 2000 },
   improvements: { type: String, default: "", maxlength: 2000 },
-  createdAt:    { type: Date, default: Date.now },
+  createdAt: { type: Date, default: Date.now },
 });
 reflectionSchema.index({ userId: 1, date: 1 }, { unique: true });
 
 const preferencesSchema = new mongoose.Schema({
-  userId:     { type: mongoose.Schema.Types.ObjectId, ref: "User", unique: true, sparse: true, required: true },
-  theme:      { type: String, enum: ["light", "dark"], default: "light" },
-  accentColor:{ type: String, enum: ["green", "blue", "purple", "red", "orange", "indigo"], default: "indigo" },
-  updatedAt:  { type: Date, default: Date.now },
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: "User", unique: true, sparse: true, required: true },
+  theme: { type: String, enum: ["light", "dark"], default: "light" },
+  accentColor: { type: String, enum: ["green", "blue", "purple", "red", "orange", "indigo"], default: "indigo" },
+  updatedAt: { type: Date, default: Date.now },
 });
 
-const User            = mongoose.model("User",            userSchema);
-const BlockedSite     = mongoose.model("BlockedSite",     blockedSiteSchema);
+const User = mongoose.model("User", userSchema);
+const BlockedSite = mongoose.model("BlockedSite", blockedSiteSchema);
 const CategoryMapping = mongoose.model("CategoryMapping", categoryMappingSchema);
-const Reflection      = mongoose.model("Reflection",      reflectionSchema);
-const Preferences     = mongoose.model("Preferences",     preferencesSchema);
+const Reflection = mongoose.model("Reflection", reflectionSchema);
+const Preferences = mongoose.model("Preferences", preferencesSchema);
+
+
+const customCategorySchema = new mongoose.Schema({
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
+  catId: { type: String, required: true, maxlength: 64 },  // used as category value in mappings
+  name: { type: String, required: true, maxlength: 64 },
+  emoji: { type: String, default: "📁", maxlength: 8 },
+  color: { type: String, default: "#6366f1", maxlength: 9 },
+  updatedAt: { type: Date, default: Date.now },
+});
+customCategorySchema.index({ userId: 1, catId: 1 }, { unique: true });
+const CustomCategory = mongoose.model("CustomCategory", customCategorySchema);
 
 // ─────────────────────────────────────────────
 // INDEX REPAIR (runs once on DB open)
@@ -214,7 +235,7 @@ async function repairIndexes() {
     async function dropIfNonSparse(col, idxName) {
       try {
         const list = await db.collection(col).indexes();
-        const bad  = list.find(i => i.name === idxName && !i.sparse);
+        const bad = list.find(i => i.name === idxName && !i.sparse);
         if (bad) {
           await db.collection(col).dropIndex(idxName);
           console.log(`✅ Fixed index: ${col}.${idxName}`);
@@ -236,6 +257,7 @@ async function repairIndexes() {
       CategoryMapping.syncIndexes(),
       Reflection.syncIndexes(),
       Preferences.syncIndexes(),
+      CustomCategory.syncIndexes(),
     ]);
 
     console.log("✅ All indexes in sync");
@@ -252,9 +274,9 @@ mongoose.connection.once("open", repairIndexes);
 const TOKEN_EXPIRY_DAYS = 30;
 
 function createAuthToken(userId) {
-  const expiry  = Date.now() + TOKEN_EXPIRY_DAYS * 24 * 60 * 60 * 1000;
+  const expiry = Date.now() + TOKEN_EXPIRY_DAYS * 24 * 60 * 60 * 1000;
   const payload = Buffer.from(`${userId}.${expiry}`).toString("base64url");
-  const sig     = crypto.createHmac("sha256", JWT_SECRET).update(payload).digest("hex");
+  const sig = crypto.createHmac("sha256", JWT_SECRET).update(payload).digest("hex");
   return `${payload}.${sig}`;
 }
 
@@ -263,19 +285,19 @@ function verifyAuthToken(token) {
     if (!token || typeof token !== "string") return null;
     const dot = token.lastIndexOf(".");
     if (dot < 1) return null;
-    const payload  = token.slice(0, dot);
-    const sig      = token.slice(dot + 1);
+    const payload = token.slice(0, dot);
+    const sig = token.slice(dot + 1);
     const expected = crypto.createHmac("sha256", JWT_SECRET).update(payload).digest("hex");
     // Constant-time comparison — prevents timing attacks
-    const sigBuf = Buffer.from(sig,      "hex");
+    const sigBuf = Buffer.from(sig, "hex");
     const expBuf = Buffer.from(expected, "hex");
     if (sigBuf.length !== expBuf.length) return null;
     if (!crypto.timingSafeEqual(sigBuf, expBuf)) return null;
-    const decoded          = Buffer.from(payload, "base64url").toString("utf8");
-    const lastDot          = decoded.lastIndexOf(".");
+    const decoded = Buffer.from(payload, "base64url").toString("utf8");
+    const lastDot = decoded.lastIndexOf(".");
     if (lastDot < 1) return null;
-    const userId  = decoded.slice(0, lastDot);
-    const expiry  = parseInt(decoded.slice(lastDot + 1), 10);
+    const userId = decoded.slice(0, lastDot);
+    const expiry = parseInt(decoded.slice(lastDot + 1), 10);
     if (!userId || !expiry || Date.now() > expiry) return null;
     return userId;
   } catch {
@@ -298,7 +320,7 @@ function hashOTP(otp) {
 function getServerBase(req) {
   if (PROD_URL) return PROD_URL.replace(/\/+$/, "");
   const proto = req.headers["x-forwarded-proto"] || req.protocol || "https";
-  const host  = req.headers["x-forwarded-host"]  || req.headers.host || "";
+  const host = req.headers["x-forwarded-host"] || req.headers.host || "";
   return `${proto}://${host}`;
 }
 
@@ -350,25 +372,111 @@ async function sendVerificationEmail(email, token) {
   });
 }
 
-async function sendPasswordResetEmail(email, otp) {
+async function sendPasswordResetEmail(email, otp, userId) {
   if (!brevo) throw new Error("Email service not configured");
+
+  // Optionally look up user's preferred theme/accent for the email link
+  let theme = "light", accent = "indigo";
+  if (userId) {
+    try {
+      const prefs = await Preferences.findOne({ userId });
+      if (prefs) { theme = prefs.theme || "light"; accent = prefs.accentColor || "indigo"; }
+    } catch { /* non-fatal */ }
+  }
+
+  const resetPageBase = process.env.RESET_PAGE_URL || BASE_URL;
+  const resetUrl = `${resetPageBase}/reset-password.html`
+    + `?otp=${encodeURIComponent(otp)}`
+    + `&email=${encodeURIComponent(email)}`
+    + `&theme=${encodeURIComponent(theme)}`
+    + `&accent=${encodeURIComponent(accent)}`;
+
   await brevo.transactionalEmails.sendTransacEmail({
     to: [{ email }],
     sender: { email: EMAIL_USER || "noreply@focustracker.com", name: "Focus Tracker" },
     subject: "Reset your Focus Tracker password",
     htmlContent: `
-      <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;">
-        <h2 style="color:#4f46e5;">⏱️ Password Reset</h2>
-        <p>Your one-time reset code (expires in 10 minutes):</p>
-        <div style="background:#f1f5f9;padding:24px;text-align:center;
-             font-size:36px;letter-spacing:12px;font-weight:700;
-             color:#1e293b;border-radius:8px;margin:16px 0;">
-          ${otp}
-        </div>
-        <p style="color:#64748b;font-size:13px;">
-          If you didn't request this, you can safely ignore this email.
-        </p>
-      </div>
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Reset your password</title></head>
+<body style="margin:0;padding:0;background:#f5f3ef;font-family:'Helvetica Neue',Arial,sans-serif;-webkit-font-smoothing:antialiased;">
+<table width="100%" cellpadding="0" cellspacing="0" style="background:#f5f3ef;padding:40px 16px;">
+<tr><td align="center">
+<table width="480" cellpadding="0" cellspacing="0" style="max-width:480px;width:100%;background:#fdfcfa;border:1px solid #e0dbd4;border-radius:20px;overflow:hidden;box-shadow:0 16px 40px rgba(28,25,23,.1);">
+
+  <!-- Accent bar -->
+  <tr><td style="background:linear-gradient(135deg,#4f46e5,#7c3aed);height:3px;font-size:0;">&nbsp;</td></tr>
+
+  <!-- Header -->
+  <tr><td style="padding:32px 36px 22px;">
+    <table cellpadding="0" cellspacing="0">
+      <tr>
+        <td style="width:42px;height:42px;background:linear-gradient(135deg,#4f46e5,#7c3aed);border-radius:11px;text-align:center;vertical-align:middle;font-size:20px;">⏱️</td>
+        <td style="padding-left:11px;">
+          <div style="font-size:17px;color:#1c1917;">Focus <strong>Tracker</strong></div>
+          <div style="font-size:11px;color:#a8a29e;margin-top:1px;">Password reset request</div>
+        </td>
+      </tr>
+    </table>
+  </td></tr>
+
+  <!-- Body -->
+  <tr><td style="padding:0 36px 32px;">
+    <h1 style="font-size:24px;color:#1c1917;margin:0 0 10px;font-weight:400;font-style:italic;font-family:Georgia,serif;letter-spacing:-.2px;line-height:1.25;">
+      Reset your <strong style="font-style:normal;">password</strong>
+    </h1>
+    <p style="font-size:14.5px;color:#57534e;margin:0 0 26px;line-height:1.65;">
+      Someone requested a password reset for <strong>${email}</strong>. Click the button below to set a new password. The link expires in <strong>10 minutes</strong>.
+    </p>
+
+    <!-- CTA -->
+    <table cellpadding="0" cellspacing="0" style="margin-bottom:28px;">
+      <tr>
+        <td style="background:linear-gradient(135deg,#4f46e5,#7c3aed);border-radius:10px;">
+          <a href="${resetUrl}" style="display:inline-block;padding:14px 30px;color:#ffffff;font-size:15px;font-weight:600;text-decoration:none;letter-spacing:.01em;">
+            Reset my password &rarr;
+          </a>
+        </td>
+      </tr>
+    </table>
+
+    <!-- Divider -->
+    <div style="border-top:1px solid #e0dbd4;margin:0 0 22px;"></div>
+
+    <!-- OTP fallback -->
+    <p style="font-size:12.5px;color:#a8a29e;margin:0 0 12px;font-weight:600;text-transform:uppercase;letter-spacing:.07em;">
+      Or enter this code in the extension
+    </p>
+    <div style="background:#ede9e3;border-radius:12px;padding:20px;margin-bottom:22px;text-align:center;">
+      <div style="font-family:'Courier New',Courier,monospace;font-size:32px;font-weight:700;letter-spacing:12px;color:#1c1917;line-height:1;">${otp}</div>
+      <div style="font-size:11px;color:#a8a29e;margin-top:8px;">Valid for 10 minutes</div>
+    </div>
+
+    <!-- URL fallback -->
+    <div style="background:#f5f3ef;border:1px solid #e0dbd4;border-radius:8px;padding:13px;margin-bottom:22px;">
+      <div style="font-size:11px;color:#a8a29e;margin-bottom:5px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;">Button not working? Copy this link:</div>
+      <a href="${resetUrl}" style="font-size:11.5px;color:#4f46e5;word-break:break-all;font-family:'Courier New',monospace;text-decoration:none;">${resetUrl}</a>
+    </div>
+
+    <p style="font-size:12.5px;color:#a8a29e;margin:0;line-height:1.6;">
+      If you didn't request this, you can safely ignore this email.
+    </p>
+  </td></tr>
+
+  <!-- Footer -->
+  <tr><td style="padding:18px 36px 26px;border-top:1px solid #e0dbd4;text-align:center;">
+    <p style="font-size:11.5px;color:#a8a29e;margin:0;line-height:1.6;">
+      Focus Tracker &middot; Your productivity companion<br>
+      This is an automated message &mdash; please do not reply.
+    </p>
+  </td></tr>
+
+</table>
+</td></tr>
+</table>
+</body>
+</html>
     `,
   });
 }
@@ -378,16 +486,16 @@ async function sendPasswordResetEmail(email, otp) {
 // ─────────────────────────────────────────────
 async function requireAuth(req, res, next) {
   const header = req.headers["authorization"];
-  const token  = header?.startsWith("Bearer ") ? header.slice(7) : null;
+  const token = header?.startsWith("Bearer ") ? header.slice(7) : null;
   if (!token) return res.status(401).json({ error: "Login required" });
 
   const userId = verifyAuthToken(token);
-  if (!userId)  return res.status(403).json({ error: "Session expired. Please log in again." });
+  if (!userId) return res.status(403).json({ error: "Session expired. Please log in again." });
 
   try {
     const user = await User.findById(userId).select("-passwordHash -resetToken -verifyToken -resetTokenExpiry");
-    if (!user)  return res.status(403).json({ error: "Account not found. Please log in again." });
-    req.userId    = user._id;
+    if (!user) return res.status(403).json({ error: "Account not found. Please log in again." });
+    req.userId = user._id;
     req.userEmail = user.email;
     next();
   } catch (err) {
@@ -491,17 +599,17 @@ async function findOrCreateGoogleUser({ googleId, email, name, avatar }) {
   let user = await User.findOne({ $or: [{ googleId }, { email: email.toLowerCase() }] });
   if (!user) {
     user = await User.create({
-      email:       email.toLowerCase(),
+      email: email.toLowerCase(),
       googleId,
       displayName: sanitizeName(name, email.split("@")[0]),
-      avatar:      avatar || "",
-      authMethod:  "google",
-      isVerified:  true,
+      avatar: avatar || "",
+      authMethod: "google",
+      isVerified: true,
     });
     await ensurePreferences(user._id);
   } else {
     if (!user.googleId) {
-      user.googleId   = googleId;
+      user.googleId = googleId;
       user.isVerified = true;
       user.authMethod = user.passwordHash ? "both" : "google";
     }
@@ -537,14 +645,14 @@ app.post("/auth/signup", async (req, res) => {
       return res.status(409).json({ error: "An account with this email already exists" });
 
     const passwordHash = await bcrypt.hash(password, 12);
-    const verifyToken  = crypto.randomBytes(32).toString("hex");
+    const verifyToken = crypto.randomBytes(32).toString("hex");
 
     const user = await User.create({
-      email:       email.toLowerCase(),
+      email: email.toLowerCase(),
       passwordHash,
       displayName: sanitizeName(name, email.split("@")[0]),
-      authMethod:  "email",
-      isVerified:  false,
+      authMethod: "email",
+      isVerified: false,
       verifyToken,
     });
 
@@ -555,7 +663,7 @@ app.post("/auth/signup", async (req, res) => {
         console.error("Verification email failed:", e.message)
       );
     } else {
-      user.isVerified  = true;
+      user.isVerified = true;
       user.verifyToken = null;
       await user.save();
     }
@@ -583,7 +691,7 @@ app.get("/auth/verify-email", async (req, res) => {
   try {
     const user = await User.findOne({ verifyToken: token }).select("+verifyToken");
     if (!user) return res.status(400).send("Link expired or already used");
-    user.isVerified  = true;
+    user.isVerified = true;
     user.verifyToken = null;
     await user.save();
     res.send(`<!DOCTYPE html>
@@ -661,7 +769,7 @@ app.post("/auth/google", async (req, res) => {
 
     if (!email) throw new Error("Google did not return an email");
 
-    const user  = await findOrCreateGoogleUser({ googleId, email, name, avatar });
+    const user = await findOrCreateGoogleUser({ googleId, email, name, avatar });
     const token = createAuthToken(user._id.toString());
     res.json({
       success: true,
@@ -681,7 +789,7 @@ app.get("/auth/google/popup", (req, res) => {
       "Google sign-in is not configured on this server."));
   }
 
-  const base        = getServerBase(req);
+  const base = getServerBase(req);
   const callbackUri = `${base}/auth/google/callback`;
 
   // Encode the exact callbackUri into state — /callback reads it back
@@ -689,12 +797,12 @@ app.get("/auth/google/popup", (req, res) => {
   const state = Buffer.from(JSON.stringify({ cb: callbackUri })).toString("base64url");
 
   const params = new URLSearchParams({
-    client_id:     GOOGLE_CLIENT_ID,
-    redirect_uri:  callbackUri,
+    client_id: GOOGLE_CLIENT_ID,
+    redirect_uri: callbackUri,
     response_type: "code",
-    scope:         "openid email profile",
-    access_type:   "offline",
-    prompt:        "select_account",
+    scope: "openid email profile",
+    access_type: "offline",
+    prompt: "select_account",
     state,
   });
 
@@ -721,7 +829,7 @@ app.get("/auth/google/callback", async (req, res) => {
     let callbackUri;
     try {
       const decoded = JSON.parse(Buffer.from(state || "", "base64url").toString("utf8"));
-      callbackUri   = decoded?.cb;
+      callbackUri = decoded?.cb;
     } catch { /* fall through */ }
     if (!callbackUri) {
       callbackUri = `${getServerBase(req)}/auth/google/callback`;
@@ -733,20 +841,20 @@ app.get("/auth/google/callback", async (req, res) => {
 
     // Verify and extract profile
     const ticket = await googleClient.verifyIdToken({
-      idToken:  tokens.id_token,
+      idToken: tokens.id_token,
       audience: GOOGLE_CLIENT_ID,
     });
     const p = ticket.getPayload();
     const { sub: googleId, email, name, picture: avatar } = p;
     if (!email) throw new Error("Google did not return an email");
 
-    const user  = await findOrCreateGoogleUser({ googleId, email, name, avatar });
+    const user = await findOrCreateGoogleUser({ googleId, email, name, avatar });
     const token = createAuthToken(user._id.toString());
 
     res.send(buildPopupHTML(token, {
-      email:      user.email,
-      name:       user.displayName,
-      avatar:     user.avatar,
+      email: user.email,
+      name: user.displayName,
+      avatar: user.avatar,
       isVerified: true,
     }));
   } catch (err) {
@@ -762,10 +870,10 @@ app.get("/auth/google/debug", (req, res) => {
     return res.status(404).json({ error: "Not found" });
   const base = getServerBase(req);
   res.json({
-    google_configured:    !!googleClient,
-    redirect_uri:         `${base}/auth/google/callback`,
-    prod_url_env:         PROD_URL || "(not set)",
-    note:                 "Disabled in production",
+    google_configured: !!googleClient,
+    redirect_uri: `${base}/auth/google/callback`,
+    prod_url_env: PROD_URL || "(not set)",
+    note: "Disabled in production",
   });
 });
 
@@ -773,7 +881,7 @@ app.get("/auth/google/debug", (req, res) => {
 app.post("/auth/forgot-password", async (req, res) => {
   const { email } = req.body;
   if (!email || typeof email !== "string" || email.length > 254 ||
-      !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))
+    !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))
     return res.status(400).json({ error: "Valid email is required" });
 
   try {
@@ -792,14 +900,14 @@ app.post("/auth/forgot-password", async (req, res) => {
       });
     }
 
-    const otp       = generateOTP();
+    const otp = generateOTP();
     const otpExpiry = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
 
-    user.resetToken       = hashOTP(otp);
+    user.resetToken = hashOTP(otp);
     user.resetTokenExpiry = otpExpiry;
     await user.save();
 
-    await sendPasswordResetEmail(email, otp);
+    await sendPasswordResetEmail(email, otp, user._id);
     console.log("✅ Password reset email sent");
 
     res.json({ success: true, message: "Reset code sent! Check your inbox." });
@@ -818,7 +926,7 @@ app.post("/auth/reset-password", async (req, res) => {
   if (!otp || typeof otp !== "string" || !/^\d{6}$/.test(otp))
     return res.status(400).json({ error: "Enter the 6-digit code from your email" });
   if (!newPassword || typeof newPassword !== "string" ||
-      newPassword.length < 8 || newPassword.length > 128)
+    newPassword.length < 8 || newPassword.length > 128)
     return res.status(400).json({ error: "Password must be 8–128 characters" });
 
   try {
@@ -832,8 +940,8 @@ app.post("/auth/reset-password", async (req, res) => {
     if (hashOTP(otp) !== user.resetToken)
       return res.status(400).json({ error: "Incorrect reset code" });
 
-    user.passwordHash     = await bcrypt.hash(newPassword, 12);
-    user.resetToken       = null;
+    user.passwordHash = await bcrypt.hash(newPassword, 12);
+    user.resetToken = null;
     user.resetTokenExpiry = null;
     await user.save();
 
@@ -850,9 +958,9 @@ app.get("/auth/me", requireAuth, async (req, res) => {
     const user = await User.findById(req.userId);
     if (!user) return res.status(404).json({ error: "User not found" });
     res.json({
-      email:      user.email,
-      name:       user.displayName,
-      avatar:     user.avatar,
+      email: user.email,
+      name: user.displayName,
+      avatar: user.avatar,
       isVerified: user.isVerified,
     });
   } catch {
@@ -936,11 +1044,12 @@ app.post("/categories", requireAuth, async (req, res) => {
 
   if (!domain || typeof domain !== "string" || domain.length > 253)
     return res.status(400).json({ error: "Valid domain required" });
-  if (!category || typeof category !== "string")
-    return res.status(400).json({ error: "Category required" });
-  if (!VALID_CATEGORIES.includes(category))
-    return res.status(400).json({ error: `Category must be one of: ${VALID_CATEGORIES.join(", ")}` });
+  if (!category || typeof category !== "string" || category.trim().length === 0)
+    return res.status(400).json({ error: "Category name is required" });
+  if (category.length > 64)
+    return res.status(400).json({ error: "Category name must be 64 characters or fewer" });
 
+  const sanitizedCategory = category.trim();
   const normalized = normalizeDomain(domain);
   if (!normalized || !normalized.includes("."))
     return res.status(400).json({ error: "Invalid domain" });
@@ -948,16 +1057,17 @@ app.post("/categories", requireAuth, async (req, res) => {
   try {
     await CategoryMapping.updateOne(
       { userId: req.userId, domain: normalized },
-      { $set: { userId: req.userId, domain: normalized, category, updatedAt: new Date() } },
+      { $set: { userId: req.userId, domain: normalized, category: sanitizedCategory, updatedAt: new Date() } },
       { upsert: true }
     );
-    res.json({ success: true, domain: normalized, category });
+    res.json({ success: true, domain: normalized, category: sanitizedCategory });
   } catch (err) {
-    if (err.code === 11000) return res.json({ success: true, domain: normalized, category });
+    if (err.code === 11000) return res.json({ success: true, domain: normalized, category: sanitizedCategory });
     console.error("POST /categories:", err.message);
     res.status(500).json({ error: "Failed to save category" });
   }
 });
+
 
 app.delete("/categories/:domain", requireAuth, async (req, res) => {
   try {
@@ -969,6 +1079,72 @@ app.delete("/categories/:domain", requireAuth, async (req, res) => {
     res.status(500).json({ error: "Failed to delete category" });
   }
 });
+
+// GET /custom-categories — return all custom categories for this user
+app.get("/custom-categories", requireAuth, async (req, res) => {
+  try {
+    const cats = await CustomCategory.find(
+      { userId: req.userId },
+      { _id: 0, catId: 1, name: 1, emoji: 1, color: 1 }
+    );
+    res.json(cats);
+  } catch (err) {
+    console.error("GET /custom-categories:", err.message);
+    res.status(500).json({ error: "Failed to load custom categories" });
+  }
+});
+
+// POST /custom-categories — create or update a custom category
+app.post("/custom-categories", requireAuth, async (req, res) => {
+  const { catId, name, emoji, color } = req.body;
+
+  if (!catId || typeof catId !== "string" || catId.trim().length === 0 || catId.length > 64)
+    return res.status(400).json({ error: "Valid catId required (max 64 chars)" });
+  if (!name || typeof name !== "string" || name.trim().length === 0 || name.length > 64)
+    return res.status(400).json({ error: "Valid name required" });
+  if (emoji && (typeof emoji !== "string" || emoji.length > 8))
+    return res.status(400).json({ error: "Invalid emoji" });
+  if (color && (typeof color !== "string" || !/^#[0-9a-fA-F]{3,8}$/.test(color)))
+    return res.status(400).json({ error: "Invalid color (must be hex like #6366f1)" });
+
+  try {
+    await CustomCategory.updateOne(
+      { userId: req.userId, catId: catId.trim() },
+      {
+        $set: {
+          userId: req.userId,
+          catId: catId.trim(),
+          name: name.trim(),
+          emoji: emoji || "📁",
+          color: color || "#6366f1",
+          updatedAt: new Date(),
+        }
+      },
+      { upsert: true }
+    );
+    res.json({ success: true });
+  } catch (err) {
+    if (err.code === 11000) return res.json({ success: true });
+    console.error("POST /custom-categories:", err.message);
+    res.status(500).json({ error: "Failed to save custom category" });
+  }
+});
+
+// DELETE /custom-categories/:catId — delete a custom category + all its domain mappings
+app.delete("/custom-categories/:catId", requireAuth, async (req, res) => {
+  try {
+    const catId = decodeURIComponent(req.params.catId).trim();
+    // Remove the category metadata
+    await CustomCategory.deleteOne({ userId: req.userId, catId });
+    // Remove all domain mappings that pointed to this category
+    await CategoryMapping.deleteMany({ userId: req.userId, category: catId });
+    res.json({ success: true });
+  } catch (err) {
+    console.error("DELETE /custom-categories:", err.message);
+    res.status(500).json({ error: "Failed to delete custom category" });
+  }
+});
+
 
 // ─────────────────────────────────────────────────────────────────────
 // REFLECTIONS
@@ -1012,13 +1188,15 @@ app.post("/reflections", requireAuth, async (req, res) => {
   try {
     await Reflection.updateOne(
       { userId: req.userId, date },
-      { $set: {
+      {
+        $set: {
           userId: req.userId, date,
           distractions: clamp(distractions),
-          wentWell:     clamp(wentWell),
+          wentWell: clamp(wentWell),
           improvements: clamp(improvements),
-          createdAt:    new Date(),
-      }},
+          createdAt: new Date(),
+        }
+      },
       { upsert: true }
     );
     res.json({ success: true });
@@ -1047,10 +1225,10 @@ app.get("/preferences", requireAuth, async (req, res) => {
 
 app.post("/preferences", requireAuth, async (req, res) => {
   const { theme, accentColor } = req.body;
-  const validThemes  = ["light", "dark"];
+  const validThemes = ["light", "dark"];
   const validAccents = ["green", "blue", "purple", "red", "orange", "indigo"];
 
-  const safeTheme  = validThemes.includes(theme)    ? theme  : "light";
+  const safeTheme = validThemes.includes(theme) ? theme : "light";
   const safeAccent = validAccents.includes(accentColor) ? accentColor : "indigo";
 
   try {
@@ -1072,11 +1250,11 @@ app.post("/preferences", requireAuth, async (req, res) => {
 // ─────────────────────────────────────────────────────────────────────
 app.get("/health", (req, res) => {
   res.json({
-    status:    "ok",
+    status: "ok",
     timestamp: new Date().toISOString(),
-    db:        mongoose.connection.readyState === 1 ? "connected" : "disconnected",
-    email:     brevo  ? "configured" : "disabled",
-    google:    googleClient ? "configured" : "not configured",
+    db: mongoose.connection.readyState === 1 ? "connected" : "disconnected",
+    email: brevo ? "configured" : "disabled",
+    google: googleClient ? "configured" : "not configured",
   });
 });
 
@@ -1106,7 +1284,7 @@ app.listen(PORT, () => {
   console.log(`\n🚀 Focus Tracker server running on port ${PORT}`);
   console.log(`   Environment : ${process.env.NODE_ENV || "development"}`);
   console.log(`   Database    : ${MONGODB_URI ? "MongoDB Atlas" : "localhost"}`);
-  console.log(`   Email       : ${brevo  ? EMAIL_USER : "disabled"}`);
+  console.log(`   Email       : ${brevo ? EMAIL_USER : "disabled"}`);
   console.log(`   Google OAuth: ${googleClient ? "enabled" : "disabled (set GOOGLE_CLIENT_ID + GOOGLE_CLIENT_SECRET)"}`);
   console.log(`   Public URL  : ${PROD_URL || "(not set — derived from request headers)"}\n`);
   startKeepAlive();
