@@ -1,13 +1,11 @@
-
-
 const API = typeof API_BASE !== "undefined" ? API_BASE : "https://habit-tracker-extension.onrender.com";
-// const API = typeof API_BASE !== "undefined" ? API_BASE : "http://localhost:5000";
 
 let authToken     = null;
 let currentTheme  = "light";
 let currentAccent = "indigo";
-let serverCategories = [];
-let userCategories   = [];
+let serverCategories  = [];   // domain→category mappings from /categories
+let customCatMeta     = [];   // user custom category metadata from /custom-categories
+let userCategories    = [];   // merged list shown in UI
 let timeChartInst = null;
 let allWeeklyData = [];
 let showingAll    = false;
@@ -15,8 +13,11 @@ let editingCatId    = null;
 let editDomains     = [];
 let originalDomains = [];
 let emojiPickerOpen = false;
-let editColor       = "#22c55e"; // tracks current color picker value in editor
-let catCustomizations = {};      // persisted per-category overrides: { Learning: { color, emoji }, ... }
+let editColor       = "#22c55e";
+
+// catCustomizations is only used as a local cache so the UI feels instant.
+// Real source of truth for custom cat metadata is MongoDB (/custom-categories).
+let catCustomizations = {};
 
 const BUILTIN_CATS = [
   { id: "Learning",    name: "Learning",    emoji: "📚", color: "#22c55e" },
@@ -24,6 +25,7 @@ const BUILTIN_CATS = [
   { id: "Distraction", name: "Distraction", emoji: "⚠️",  color: "#ef4444" },
   { id: "Other",       name: "Other",       emoji: "📦", color: "#f97316" },
 ];
+const BUILTIN_IDS = new Set(BUILTIN_CATS.map(b => b.id));
 
 async function loadAuthToken() {
   return new Promise(r => chrome.storage.local.get(["authToken"], d => { authToken = d.authToken||null; r(authToken); }));
@@ -32,23 +34,17 @@ const hdrs = () => authToken
   ? { "Content-Type":"application/json", Authorization:`Bearer ${authToken}` }
   : { "Content-Type":"application/json" };
 
-let _authRedirecting = false; // prevent multiple simultaneous redirects
+let _authRedirecting = false;
 async function apiFetch(url, options = {}) {
   const res = await fetch(url, options);
   if ((res.status === 401 || res.status === 403) && !_authRedirecting) {
     _authRedirecting = true;
-    // Read error from server if possible
     let serverMsg = "";
     try { const d = await res.clone().json(); serverMsg = d.error || ""; } catch {}
     console.warn(`[Auth] ${res.status} on ${url} — ${serverMsg || "token invalid"}`);
-    // Clear the stale token so login page doesn't auto-redirect back here
-    await new Promise(r => chrome.storage.local.remove(
-      ["authToken", "lastValidated"], r
-    ));
-    // Show brief toast before redirect (visible ~800 ms)
+    await new Promise(r => chrome.storage.local.remove(["authToken","lastValidated"], r));
     toast("Session expired — please sign in again", "err");
     setTimeout(() => { location.href = "auth.html"; }, 900);
-    // Return a fake response so callers don't crash
     return new Response(JSON.stringify({ error: "Session expired" }), {
       status: res.status,
       headers: { "Content-Type": "application/json" }
@@ -61,25 +57,17 @@ document.addEventListener("DOMContentLoaded", async () => {
   await loadAuthToken();
   if (!authToken) { location.href = "auth.html"; return; }
 
-  // Validate token against server on startup.
-  // If it returns 401/403 (expired, JWT_SECRET changed, account gone),
-  // apiFetch() will auto-clear the token and redirect to auth.html.
-  // We do this silently — if the server is asleep (cold start) we skip
-  // and let the individual API calls handle any rejection.
   try {
     const probe = await Promise.race([
       apiFetch(`${API}/auth/me`, { headers: hdrs() }),
-      new Promise(r => setTimeout(() => r({ status: 0 }), 4000)) // 4s timeout
+      new Promise(r => setTimeout(() => r({ status: 0 }), 4000))
     ]);
-    // If apiFetch already redirected (401/403), _authRedirecting is true — stop
     if (_authRedirecting) return;
-    // 200 = token good; 0 = server asleep (continue anyway); anything else = problem
     if (probe.status && probe.status !== 200 && probe.status !== 0) return;
-  } catch { /* server unreachable — proceed, API calls will handle failures */ }
+  } catch {}
 
   await loadPreferences();
-  await loadCatCustomizations();   // load saved colors/emojis before building categories
-  await loadUserCategories();
+  await loadUserCategories();   // loads both server domain-mappings AND custom cat metadata
   renderStatCards();
   initEventListeners();
   initFocusControls();
@@ -91,83 +79,73 @@ document.addEventListener("DOMContentLoaded", async () => {
   buildEmojiGrid();
 });
 
-
-
 function getUserId() {
   if (!authToken) return "default";
   try {
     const payload = authToken.split(".")[0];
     const decoded = atob(payload.replace(/-/g, "+").replace(/_/g, "/"));
-    return decoded.split(".")[0]; // userId segment before the dot
-  } catch {
-    return authToken.slice(0, 16);
-  }
+    return decoded.split(".")[0];
+  } catch { return authToken.slice(0, 16); }
 }
 
-function getCatStorageKey()    { return `catCustomizations_${getUserId()}`; }
-function getTimeDataKey()      { return `timeData_${getUserId()}`; }
-function getBlockedSitesKey()  { return `blockedSites_${getUserId()}`; }
+function getTimeDataKey()     { return `timeData_${getUserId()}`; }
+function getBlockedSitesKey() { return `blockedSites_${getUserId()}`; }
 
-/* ─── CAT CUSTOMIZATIONS (colors/emojis stored locally, scoped per user) ─── */
-
-async function loadCatCustomizations() {
-  const key = getCatStorageKey();
-  return new Promise(resolve => {
-    chrome.storage.local.get([key], res => {
-      void chrome.runtime.lastError;
-      catCustomizations = res[key] || {};
-      resolve();
-    });
-  });
-}
-
-async function saveCatCustomizations() {
-  const key = getCatStorageKey();
-  return new Promise(resolve => {
-    chrome.storage.local.set({ [key]: catCustomizations }, () => {
-      void chrome.runtime.lastError;
-      resolve();
-    });
-  });
-}
-
-/* ─── CATEGORIES ─── */
+/* ─── CATEGORIES — load from MongoDB ─── */
 async function loadUserCategories() {
-  try {
-    const r = await apiFetch(`${API}/categories`, { headers: hdrs() });
-    if (!r.ok) throw new Error(`HTTP ${r.status}`);
-    serverCategories = await r.json();
-  } catch (e) {
-    console.error("Failed to load categories:", e);
-    serverCategories = [];
+  // Load domain mappings + custom category metadata in parallel
+  const [domainRes, customRes] = await Promise.allSettled([
+    apiFetch(`${API}/categories`,       { headers: hdrs() }),
+    apiFetch(`${API}/custom-categories`,{ headers: hdrs() }),
+  ]);
+
+  serverCategories = [];
+  if (domainRes.status === "fulfilled" && domainRes.value.ok) {
+    try { serverCategories = await domainRes.value.json(); } catch {}
   }
 
-  // Build builtin categories with any saved customizations applied
+  customCatMeta = [];
+  if (customRes.status === "fulfilled" && customRes.value.ok) {
+    try { customCatMeta = await customRes.value.json(); } catch {}
+  }
+
+  _rebuildUserCategories();
+}
+
+function _rebuildUserCategories() {
+  // Builtin cats — use any customization from customCatMeta for overrides
+  const builtinOverrides = {};
+  customCatMeta.forEach(c => { if (BUILTIN_IDS.has(c.catId)) builtinOverrides[c.catId] = c; });
+
   const builtins = BUILTIN_CATS.map(cat => {
-    const custom = catCustomizations[cat.id] || {};
+    const ov = builtinOverrides[cat.id] || {};
     return {
       ...cat,
-      color:   custom.color || cat.color,
-      emoji:   custom.emoji || cat.emoji,
+      color:   ov.color || cat.color,
+      emoji:   ov.emoji || cat.emoji,
+      // domains come from serverCategories (domain→category mappings)
       domains: serverCategories.filter(m => m.category === cat.id).map(m => m.domain)
     };
   });
 
-  // Build custom (user-created) categories from catCustomizations
-  // These are entries in catCustomizations whose key is NOT a builtin id
-  const builtinIds = new Set(BUILTIN_CATS.map(b => b.id));
-  const customCats = Object.entries(catCustomizations)
-    .filter(([id]) => !builtinIds.has(id))
-    .map(([id, custom]) => ({
-      id,
-      name:    custom.name  || id,
-      emoji:   custom.emoji || "📁",
-      color:   custom.color || "#6366f1",
+  // Custom (user-created) cats from /custom-categories
+  const customCats = customCatMeta
+    .filter(c => !BUILTIN_IDS.has(c.catId))
+    .map(c => ({
+      id:       c.catId,
+      name:     c.name,
+      emoji:    c.emoji || "📁",
+      color:    c.color || "#6366f1",
       isCustom: true,
-      domains: serverCategories.filter(m => m.category === id).map(m => m.domain)
+      // Domains for custom cats also come from serverCategories (we now save them there)
+      domains:  serverCategories.filter(m => m.category === c.catId).map(m => m.domain)
     }));
 
   userCategories = [...builtins, ...customCats];
+
+  // Update local cache so background.js SYNC_CATEGORIES can pick these up
+  // (background.js fetches /categories which now stores custom cat domains too)
+  chrome.runtime.sendMessage({ type: "SYNC_CATEGORIES" }, () => void chrome.runtime.lastError);
 }
 
 function buildDomainMap() {
@@ -178,18 +156,18 @@ function buildDomainMap() {
 
 function getCatForDomain(domain) {
   const map = buildDomainMap();
-  const normalized = domain.toLowerCase().replace(/^www\./, "");
-  if (map[normalized]) return userCategories.find(c => c.id === map[normalized]);
-  const parts = normalized.split(".");
+  const n = domain.toLowerCase().replace(/^www\./, "");
+  if (map[n]) return userCategories.find(c => c.id === map[n]);
+  const parts = n.split(".");
   for (let i = 1; i < parts.length; i++) {
-    const parent = parts.slice(i).join(".");
-    if (map[parent]) return userCategories.find(c => c.id === map[parent]);
+    const p = parts.slice(i).join(".");
+    if (map[p]) return userCategories.find(c => c.id === map[p]);
   }
-  if (/leetcode|coursera|udemy|khanacademy|edx|pluralsight|geeksforgeeks/.test(normalized))
+  if (/leetcode|coursera|udemy|khanacademy|edx|pluralsight|geeksforgeeks/.test(n))
     return userCategories.find(c => c.id === "Learning");
-  if (/youtube|instagram|facebook|twitter|reddit|tiktok|netflix|twitch/.test(normalized))
+  if (/youtube|instagram|facebook|twitter|reddit|tiktok|netflix|twitch/.test(n))
     return userCategories.find(c => c.id === "Distraction");
-  if (/github|stackoverflow|dev\.to|mdn|npmjs|docs\./.test(normalized))
+  if (/github|stackoverflow|dev\.to|mdn|npmjs|docs\./.test(n))
     return userCategories.find(c => c.id === "Development");
   return userCategories.find(c => c.id === "Other") || userCategories[userCategories.length - 1];
 }
@@ -237,7 +215,7 @@ function startTicker() {
       const cat   = getCatForDomain(domain);
       const catId = cat?.id || "Other";
       const today = getTodayKey();
-      const key   = getTimeDataKey(); // scoped per user
+      const key   = getTimeDataKey();
       chrome.storage.local.get([key], res => {
         void chrome.runtime.lastError;
         const td = res[key] || {};
@@ -259,15 +237,14 @@ function getDateKey(offset=0) {
   const d = new Date(); d.setDate(d.getDate()-offset);
   return d.toISOString().split("T")[0];
 }
-
 let _lastChartRender = 0;
 
 function renderFromStorage() {
   const range = document.getElementById("rangeSelect")?.value || "today";
-  const key   = getTimeDataKey(); // scoped per user
+  const key   = getTimeDataKey();
   chrome.storage.local.get([key], res => {
     void chrome.runtime.lastError;
-    const raw = res[key] || {};
+    const raw  = res[key] || {};
     const isDate = Object.keys(raw).some(k => /^\d{4}-\d{2}-\d{2}$/.test(k));
     const all  = isDate ? raw : { [getDateKey(0)]: raw };
     let days = [];
@@ -275,19 +252,17 @@ function renderFromStorage() {
     else if (range==="yesterday") days = [getDateKey(1)];
     else if (range==="7days")     days = Array.from({length:7},(_,i)=>getDateKey(i));
     else if (range==="30days")    days = Array.from({length:30},(_,i)=>getDateKey(i));
-    const catTime  = {};
-    const siteTime = {};
-    const siteCat  = {};
+    const catTime={}, siteTime={}, siteCat={};
     userCategories.forEach(c => { catTime[c.id] = 0; });
     days.forEach(day => {
       const dd = all[day] || {};
       for (const site in dd) {
-        const e  = dd[site];
-        const ms = typeof e==="number" ? e : (e.time||0);
-        const catId = getCatForDomain(site)?.id || "Other";
-        catTime[catId]  = (catTime[catId]  || 0) + ms;
-        siteTime[site]  = (siteTime[site]  || 0) + ms;
-        siteCat[site]   = catId;
+        const e   = dd[site];
+        const ms  = typeof e==="number" ? e : (e.time||0);
+        const cid = getCatForDomain(site)?.id || "Other";
+        catTime[cid]  = (catTime[cid]  || 0) + ms;
+        siteTime[site] = (siteTime[site] || 0) + ms;
+        siteCat[site]  = cid;
       }
     });
     renderStats(catTime, siteTime, siteCat);
@@ -305,502 +280,326 @@ function renderStats(catTime, siteTime, siteCat) {
   const total = Object.values(catTime).reduce((a,b)=>a+b,0);
   const el = id => document.getElementById(id);
   if (el("totalTime")) el("totalTime").textContent = fmt(total);
-  // Update the chart header total badge
   const badge = document.getElementById("chartTotalBadge");
   if (badge) {
-    if (total > 0) { badge.textContent = fmt(total) + " total"; badge.style.display = ""; }
-    else           { badge.style.display = "none"; }
+    if (total>0){ badge.textContent=fmt(total)+" total"; badge.style.display=""; }
+    else badge.style.display="none";
   }
   userCategories.forEach(cat => {
-    const el2 = document.getElementById(`catTime-${cat.id}`);
-    if (el2) el2.textContent = fmt(catTime[cat.id]||0);
+    const e2 = document.getElementById(`catTime-${cat.id}`);
+    if (e2) e2.textContent = fmt(catTime[cat.id]||0);
   });
   const score = calcScore(catTime, total);
-  if (el("productivityScore")) el("productivityScore").textContent = score < 0 ? "—" : score;
-  if (el("scoreMood"))  el("scoreMood").textContent  = score < 0 ? "Start browsing" : scoreMood(score);
-  if (el("scoreDesc"))  el("scoreDesc").textContent  = score < 0 ? "to see your score" : scoreDesc(score, total);
+  if (el("productivityScore")) el("productivityScore").textContent = score<0?"—":score;
+  if (el("scoreMood")) el("scoreMood").textContent = score<0?"Start browsing":scoreMood(score);
+  if (el("scoreDesc")) el("scoreDesc").textContent = score<0?"to see your score":scoreDesc(score, total);
   const ul = el("topSites");
   if (!ul) return;
   ul.innerHTML = "";
   const sorted = Object.entries(siteTime).filter(([,t])=>t>0).sort((a,b)=>b[1]-a[1]).slice(0,8);
   if (!sorted.length) {
-    ul.innerHTML = `<li style="padding:12px 6px;color:var(--text-3);font-size:14px;">No data yet — browse some sites!</li>`;
+    ul.innerHTML=`<li style="padding:12px 6px;color:var(--text-3);font-size:14px;">No data yet — browse some sites!</li>`;
     return;
   }
   const maxMs = sorted[0][1];
-  sorted.forEach(([site, ms]) => {
-    const cat = userCategories.find(c => c.id === (siteCat[site]||"Other"));
-    const pct = maxMs > 0 ? Math.round((ms/maxMs)*100) : 0;
+  sorted.forEach(([site,ms]) => {
+    const cat = userCategories.find(c => c.id===(siteCat[site]||"Other"));
+    const pct = maxMs>0?Math.round((ms/maxMs)*100):0;
     const li  = document.createElement("li");
-    li.innerHTML = `
-      <span class="site-name" title="${site}">${site}</span>
-      <div class="site-bar-wrap"><div class="site-bar" style="width:${pct}%;background:${cat?.color||'var(--accent)'}"></div></div>
-      <span class="site-time">${fmt(ms)}</span>
-    `;
+    li.innerHTML=`<span class="site-name" title="${site}">${site}</span><div class="site-bar-wrap"><div class="site-bar" style="width:${pct}%;background:${cat?.color||'var(--accent)'}"></div></div><span class="site-time">${fmt(ms)}</span>`;
     ul.appendChild(li);
   });
 }
 
 function calcScore(catTime, totalMs) {
-  if (!totalMs || totalMs < 5 * 60 * 1000) return -1;
-  const productive  = (catTime["Learning"] || 0) + (catTime["Development"] || 0);
-  const distracting = catTime["Distraction"] || 0;
-  const neutral     = catTime["Other"] || 0;
-  let raw = ((productive/totalMs)*100) - ((distracting/totalMs)*60) + ((neutral/totalMs)*20);
-  raw = Math.max(0, Math.min(100, raw));
+  if (!totalMs||totalMs<5*60*1000) return -1;
+  const prod = (catTime["Learning"]||0)+(catTime["Development"]||0);
+  const dist = catTime["Distraction"]||0;
+  const neut = catTime["Other"]||0;
+  let raw = ((prod/totalMs)*100)-((dist/totalMs)*60)+((neut/totalMs)*20);
+  raw = Math.max(0,Math.min(100,raw));
   const conf = Math.min(totalMs/60000,60)/60;
-  return Math.round(raw*conf + 45*(1-conf));
+  return Math.round(raw*conf+45*(1-conf));
 }
-function scoreMood(s) {
-  if (s>=85) return "Excellent day"; if (s>=70) return "Strong session";
-  if (s>=55) return "Good progress"; if (s>=40) return "Balanced";
-  if (s>=25) return "Distracted"; return "Off track";
-}
-function scoreDesc(score, total) {
-  const hrs = (total/3600000).toFixed(1);
-  if (score>=70) return `${hrs}h tracked · keep going`;
-  if (score>=40) return `${hrs}h tracked · more learning helps`;
-  return `${hrs}h tracked · time to refocus`;
-}
+function scoreMood(s){ if(s>=85)return"Excellent day";if(s>=70)return"Strong session";if(s>=55)return"Good progress";if(s>=40)return"Balanced";if(s>=25)return"Distracted";return"Off track"; }
+function scoreDesc(score,total){ const hrs=(total/3600000).toFixed(1); if(score>=70)return`${hrs}h tracked · keep going`;if(score>=40)return`${hrs}h tracked · more learning helps`;return`${hrs}h tracked · time to refocus`; }
 
 /* ─── CHART ─── */
 function renderChart(catTime) {
   const container = document.getElementById("chartContainer");
   const canvas    = document.getElementById("timeChart");
-  if (!canvas || !container) return;
-
-  const entries = userCategories
-    .map(cat => ({ cat, ms: catTime[cat.id] || 0 }))
-    .filter(e => e.ms > 0)
-    .sort((a, b) => b.ms - a.ms);
-
-  // Destroy old instance cleanly
-  if (timeChartInst) { timeChartInst.destroy(); timeChartInst = null; }
-
-  const isDark  = document.documentElement.getAttribute("data-theme") === "dark"
-               || document.body.getAttribute("data-theme") === "dark";
-
-  // ── Empty state — styled HTML, not canvas drawing ─────────────────────────
+  if (!canvas||!container) return;
+  const entries = userCategories.map(cat=>({cat,ms:catTime[cat.id]||0})).filter(e=>e.ms>0).sort((a,b)=>b.ms-a.ms);
+  if (timeChartInst){ timeChartInst.destroy(); timeChartInst=null; }
+  const isDark = document.body.getAttribute("data-theme")==="dark";
   let emptyEl = container.querySelector(".chart-empty");
   if (!entries.length) {
-    canvas.style.display = "none";
-    if (!emptyEl) {
-      emptyEl = document.createElement("div");
-      emptyEl.className = "chart-empty";
-      container.appendChild(emptyEl);
-    }
-    emptyEl.style.display = "flex";
-    emptyEl.innerHTML = `
-      <div class="chart-empty-icon">📊</div>
-      <div class="chart-empty-text">No data yet</div>
-      <div class="chart-empty-sub">Start browsing to see your breakdown</div>
-    `;
+    canvas.style.display="none";
+    if (!emptyEl){ emptyEl=document.createElement("div"); emptyEl.className="chart-empty"; container.appendChild(emptyEl); }
+    emptyEl.style.display="flex";
+    emptyEl.innerHTML=`<div class="chart-empty-icon">📊</div><div class="chart-empty-text">No data yet</div><div class="chart-empty-sub">Start browsing to see your breakdown</div>`;
     return;
   }
-
-  // Hide empty state, show canvas
-  if (emptyEl) emptyEl.style.display = "none";
-  canvas.style.display = "block";
-
-  if (typeof Chart === "undefined") return;
-
-  // ── Sizing: fixed height per row so chart never collapses ─────────────────
-  // This prevents the blurry-on-first-load bug (canvas gets correct px dims)
-  const ROW_H  = 44;
-  const PAD_V  = 24;
-  const totalH = entries.length * ROW_H + PAD_V;
-  container.style.height = totalH + "px";
-  canvas.style.height    = totalH + "px";
-  canvas.height          = totalH * (window.devicePixelRatio || 1);
-
-  // ── Colour tokens ─────────────────────────────────────────────────────────
-  const gridCol  = isDark ? "rgba(255,255,255,0.05)" : "rgba(0,0,0,0.05)";
-  const axisCol  = isDark ? "#5c5650"                : "#c4bdb6";
-  const labelCol = isDark ? "#d6d0ca"                : "#44403c";
-  const mutedCol = isDark ? "#5c5650"                : "#a8a29e";
-
-  // ── Dataset ────────────────────────────────────────────────────────────────
-  const totalMs    = entries.reduce((s, e) => s + e.ms, 0);
-  const dataValues = entries.map(e => Math.round(e.ms / 60000 * 10) / 10);
-  const bgColors   = entries.map(e => e.cat.color + "28");
-  const bdColors   = entries.map(e => e.cat.color);
-
-  // ── Custom plugin: inline time labels (drawn OUTSIDE clip region) ──────────
-  // FIX: use clip:false on dataset so bars + labels aren't clipped at edge
-  const barLabelPlugin = {
-    id: "barLabels",
-    afterDatasetsDraw(chart) {
-      const { ctx: c, scales: { x } } = chart;
-      entries.forEach((entry, i) => {
-        const bar  = chart.getDatasetMeta(0).data[i];
-        if (!bar) return;
-        const barRight = x.getPixelForValue(dataValues[i]);
-        const pct      = totalMs > 0 ? Math.round((entry.ms / totalMs) * 100) : 0;
-        const timeStr  = fmt(entry.ms);
-        const pctStr   = `${pct}%`;
-
+  if (emptyEl) emptyEl.style.display="none";
+  canvas.style.display="block";
+  if (typeof Chart==="undefined") return;
+  const ROW_H=44,PAD_V=24,totalH=entries.length*ROW_H+PAD_V;
+  container.style.height=totalH+"px"; canvas.style.height=totalH+"px";
+  canvas.height=totalH*(window.devicePixelRatio||1);
+  const gridCol=isDark?"rgba(255,255,255,0.05)":"rgba(0,0,0,0.05)";
+  const labelCol=isDark?"#d6d0ca":"#44403c";
+  const mutedCol=isDark?"#5c5650":"#a8a29e";
+  const totalMs=entries.reduce((s,e)=>s+e.ms,0);
+  const dataValues=entries.map(e=>Math.round(e.ms/60000*10)/10);
+  const bgColors=entries.map(e=>e.cat.color+"28");
+  const bdColors=entries.map(e=>e.cat.color);
+  const barLabelPlugin={
+    id:"barLabels",
+    afterDatasetsDraw(chart){
+      const{ctx:c,scales:{x}}=chart;
+      entries.forEach((entry,i)=>{
+        const bar=chart.getDatasetMeta(0).data[i]; if(!bar)return;
+        const barRight=x.getPixelForValue(dataValues[i]);
+        const pct=totalMs>0?Math.round((entry.ms/totalMs)*100):0;
+        const timeStr=fmt(entry.ms);
         c.save();
-        // Time label — right of bar
-        c.font          = "500 11px 'JetBrains Mono', monospace";
-        c.fillStyle     = bdColors[i];
-        c.textAlign     = "left";
-        c.textBaseline  = "middle";
-        c.fillText(timeStr, barRight + 8, bar.y);
-
-        // Percentage — further right, muted
-        const timeWidth = c.measureText(timeStr).width;
-        c.font          = "400 10px 'JetBrains Mono', monospace";
-        c.fillStyle     = mutedCol;
-        c.fillText(pctStr, barRight + 8 + timeWidth + 6, bar.y);
+        c.font="500 11px 'JetBrains Mono',monospace"; c.fillStyle=bdColors[i]; c.textAlign="left"; c.textBaseline="middle";
+        c.fillText(timeStr,barRight+8,bar.y);
+        const tw=c.measureText(timeStr).width;
+        c.font="400 10px 'JetBrains Mono',monospace"; c.fillStyle=mutedCol;
+        c.fillText(`${pct}%`,barRight+8+tw+6,bar.y);
         c.restore();
       });
     }
   };
-
-  // ── Compute right padding so labels are never clipped ─────────────────────
-  // Measure widest label (time + space + pct) at 11px monospace ≈ 6.6px/char
-  const widestLabel = entries.reduce((max, e, i) => {
-    const t   = fmt(e.ms);
-    const pct = Math.round((e.ms / totalMs) * 100) + "%";
-    return Math.max(max, (t.length + 1 + pct.length) * 6.6 + 16);
-  }, 60);
-
-  timeChartInst = new Chart(canvas.getContext("2d"), {
-    type: "bar",
-    data: {
-      labels: entries.map(e => `${e.cat.emoji}  ${e.cat.name}`),
-      datasets: [{
-        data:            dataValues,
-        backgroundColor: bgColors,
-        borderColor:     bdColors,
-        borderWidth:     2,
-        borderRadius:    6,
-        borderSkipped:   false,
-        clip:            false,   // ← FIX: allows label text to render past chart edge
-      }]
+  const widestLabel=entries.reduce((max,e,i)=>{
+    const t=fmt(e.ms),pct=Math.round((e.ms/totalMs)*100)+"%";
+    return Math.max(max,(t.length+1+pct.length)*6.6+16);
+  },60);
+  timeChartInst=new Chart(canvas.getContext("2d"),{
+    type:"bar",
+    data:{
+      labels:entries.map(e=>`${e.cat.emoji}  ${e.cat.name}`),
+      datasets:[{data:dataValues,backgroundColor:bgColors,borderColor:bdColors,borderWidth:2,borderRadius:6,borderSkipped:false,clip:false}]
     },
-    options: {
-      indexAxis:          "y",
-      responsive:         true,
-      maintainAspectRatio: false,   // ← FIX: we control height explicitly, no squish
-      animation: { duration: 500, easing: "easeOutCubic" },
-      layout: {
-        padding: { right: widestLabel, top: 4, bottom: 4 }
-      },
-      plugins: {
-        legend: { display: false },
-        tooltip: {
-          backgroundColor: isDark ? "#1f2022"  : "#ffffff",
-          titleColor:      isDark ? "#f2ede8"  : "#1c1917",
-          bodyColor:       isDark ? "#9c9490"  : "#78716c",
-          borderColor:     isDark ? "#2a2c2e"  : "#e0dbd4",
-          borderWidth: 1, padding: 14, cornerRadius: 10, displayColors: false,
-          callbacks: {
-            title: items => {
-              const i = items[0].dataIndex;
-              return `${entries[i].cat.emoji}  ${entries[i].cat.name}`;
-            },
-            label: item => {
-              const i   = item.dataIndex;
-              const pct = totalMs > 0 ? Math.round((entries[i].ms / totalMs) * 100) : 0;
-              return `  ${fmt(entries[i].ms)}  ·  ${pct}% of total`;
-            }
+    options:{
+      indexAxis:"y",responsive:true,maintainAspectRatio:false,
+      animation:{duration:500,easing:"easeOutCubic"},
+      layout:{padding:{right:widestLabel,top:4,bottom:4}},
+      plugins:{
+        legend:{display:false},
+        tooltip:{
+          backgroundColor:isDark?"#1f2022":"#ffffff",titleColor:isDark?"#f2ede8":"#1c1917",
+          bodyColor:isDark?"#9c9490":"#78716c",borderColor:isDark?"#2a2c2e":"#e0dbd4",
+          borderWidth:1,padding:14,cornerRadius:10,displayColors:false,
+          callbacks:{
+            title:items=>`${entries[items[0].dataIndex].cat.emoji}  ${entries[items[0].dataIndex].cat.name}`,
+            label:item=>{const i=item.dataIndex,pct=totalMs>0?Math.round((entries[i].ms/totalMs)*100):0;return`  ${fmt(entries[i].ms)}  ·  ${pct}% of total`;}
           }
         }
       },
-      scales: {
-        x: {
-          grid:   { color: gridCol, drawBorder: false },
-          border: { display: false },
-          ticks:  {
-            color: mutedCol,
-            font:  { size: 10, family: "'JetBrains Mono', monospace" },
-            maxTicksLimit: 5,
-            callback: v => fmtMin(v)
-          }
-        },
-        y: {
-          grid:   { display: false, drawBorder: false },
-          border: { display: false },
-          ticks:  {
-            color:   labelCol,
-            font:    { size: 13, family: "'Instrument Sans', sans-serif", weight: "500" },
-            padding: 6,
-          }
-        }
+      scales:{
+        x:{grid:{color:gridCol,drawBorder:false},border:{display:false},ticks:{color:mutedCol,font:{size:10,family:"'JetBrains Mono',monospace"},maxTicksLimit:5,callback:v=>fmtMin(v)}},
+        y:{grid:{display:false,drawBorder:false},border:{display:false},ticks:{color:labelCol,font:{size:13,family:"'Instrument Sans',sans-serif",weight:"500"},padding:6}}
       }
     },
-    plugins: [barLabelPlugin]
+    plugins:[barLabelPlugin]
   });
 }
-function fmtMin(mins) { return mins >= 60 ? `${(mins/60).toFixed(1)}h` : `${Math.round(mins)}m`; }
+function fmtMin(mins){ return mins>=60?`${(mins/60).toFixed(1)}h`:`${Math.round(mins)}m`; }
 
 /* ─── PREFS ─── */
 async function loadPreferences() {
   try {
-    const r = await apiFetch(`${API}/preferences`, { headers: hdrs() });
+    const r = await apiFetch(`${API}/preferences`,{headers:hdrs()});
     if (!r.ok) throw new Error();
     const p = await r.json();
-    currentTheme  = p.theme       || "light";
-    currentAccent = p.accentColor || "indigo";
+    currentTheme=p.theme||"light"; currentAccent=p.accentColor||"indigo";
   } catch { currentTheme="light"; currentAccent="indigo"; }
-  applyTheme(currentTheme, currentAccent);
+  applyTheme(currentTheme,currentAccent);
 }
-function applyTheme(theme, accent) {
-  document.body.setAttribute("data-theme",  theme);
-  document.body.setAttribute("data-accent", accent);
-  currentTheme  = theme;
-  currentAccent = accent;
-  const ts = document.getElementById("themeSelect");
-  if (ts) ts.value = theme;
-  document.querySelectorAll(".swatch").forEach(b => b.classList.toggle("on", b.dataset.color===accent));
-  // Persist to local storage so the popup can read and match the same theme
-  chrome.storage.local.set({ theme, accentColor: accent });
+function applyTheme(theme,accent) {
+  document.body.setAttribute("data-theme",theme);
+  document.body.setAttribute("data-accent",accent);
+  currentTheme=theme; currentAccent=accent;
+  const ts=document.getElementById("themeSelect"); if(ts) ts.value=theme;
+  document.querySelectorAll(".swatch").forEach(b=>b.classList.toggle("on",b.dataset.color===accent));
+  chrome.storage.local.set({theme,accentColor:accent});
 }
 async function saveSettings() {
   try {
-    await apiFetch(`${API}/preferences`, { method:"POST", headers:hdrs(), body: JSON.stringify({ theme:currentTheme, accentColor:currentAccent }) });
+    await apiFetch(`${API}/preferences`,{method:"POST",headers:hdrs(),body:JSON.stringify({theme:currentTheme,accentColor:currentAccent})});
     closeSettings(); toast("Settings saved");
-  } catch { toast("Failed to save", "err"); }
+  } catch { toast("Failed to save","err"); }
 }
 
 /* ─── LOGOUT ─── */
 async function logout() {
   if (!confirm("Sign out?")) return;
-  // Capture scoped keys BEFORE clearing auth (so we can pass them to remove)
-  const catKey = getCatStorageKey();
-  const bsKey  = getBlockedSitesKey();
+  const bsKey = getBlockedSitesKey();
   try { await apiFetch(`${API}/auth/logout`,{method:"POST",headers:hdrs()}).catch(()=>{}); } catch {}
   chrome.runtime.sendMessage({type:"LOGOUT"},()=>void chrome.runtime.lastError);
-  // timeData_<userId> is intentionally NOT removed so browsing
-  // history is preserved and visible again on next login
-  chrome.storage.local.remove(
-    ["authToken","lastValidated","userInfo", bsKey, catKey],
-    () => { location.href="auth.html"; }
-  );
+  chrome.storage.local.remove(["authToken","lastValidated","userInfo",bsKey],()=>{ location.href="auth.html"; });
 }
 
 /* ─── CATEGORY EDITOR ─── */
-
-// isNewCat = true when creating a fresh category (not one of the 4 builtins)
 let isNewCat = false;
 
 function openNewCatEditor() {
-  isNewCat        = true;
-  editingCatId    = null;
-  editDomains     = [];
-  originalDomains = [];
-  emojiPickerOpen = false;
-  editColor       = "#6366f1";
-
-  const title = document.getElementById("catEditorTitle");
-  if (title) title.textContent = "➕ New Category";
-
-  const emojiDisplay = document.getElementById("catEmojiDisplay");
-  if (emojiDisplay) emojiDisplay.textContent = "📁";
-
-  const colorPreview = document.getElementById("colorPreview");
-  if (colorPreview) colorPreview.style.background = editColor;
-
-  const hexInput = document.getElementById("colorHexInput");
-  if (hexInput) hexInput.value = editColor;
-  const nativeInput = document.getElementById("colorNativeInput");
-  if (nativeInput) nativeInput.value = editColor;
-
-  const nameInput = document.getElementById("catNameInput");
-  if (nameInput) { nameInput.value = ""; nameInput.readOnly = false; nameInput.style.opacity = "1"; nameInput.placeholder = "Category name…"; nameInput.focus(); }
-
-  const deleteBtn = document.getElementById("deleteCatBtn");
-  if (deleteBtn) deleteBtn.style.display = "none";
-
-  const emojiWrap = document.getElementById("emojiPickerWrap");
-  if (emojiWrap) emojiWrap.style.display = "none";
-
+  isNewCat=true; editingCatId=null; editDomains=[]; originalDomains=[]; emojiPickerOpen=false; editColor="#6366f1";
+  const title=document.getElementById("catEditorTitle"); if(title) title.textContent="➕ New Category";
+  const ed=document.getElementById("catEmojiDisplay"); if(ed) ed.textContent="📁";
+  const cp=document.getElementById("colorPreview"); if(cp) cp.style.background=editColor;
+  const hi=document.getElementById("colorHexInput"); if(hi) hi.value=editColor;
+  const ni=document.getElementById("colorNativeInput"); if(ni) ni.value=editColor;
+  const nm=document.getElementById("catNameInput");
+  if(nm){ nm.value=""; nm.readOnly=false; nm.style.opacity="1"; nm.placeholder="Category name…"; nm.focus(); }
+  const db=document.getElementById("deleteCatBtn"); if(db) db.style.display="none";
+  const ew=document.getElementById("emojiPickerWrap"); if(ew) ew.style.display="none";
   renderDomainTags();
   document.getElementById("catEditorModal").classList.add("open");
 }
 
 function openCatEditor(cat) {
-  isNewCat        = false;
-  editingCatId    = cat.id;
-  editDomains     = [...(cat.domains || [])];
-  originalDomains = [...(cat.domains || [])];
-  emojiPickerOpen = false;
-  editColor       = cat.color;
-
-  const title = document.getElementById("catEditorTitle");
-  if (title) title.textContent = `${cat.emoji} ${cat.name} — Edit`;
-
-  const emojiDisplay = document.getElementById("catEmojiDisplay");
-  if (emojiDisplay) emojiDisplay.textContent = cat.emoji;
-
-  const colorPreview = document.getElementById("colorPreview");
-  if (colorPreview) colorPreview.style.background = cat.color;
-
-  const hexInput = document.getElementById("colorHexInput");
-  if (hexInput) hexInput.value = cat.color;
-  const nativeInput = document.getElementById("colorNativeInput");
-  if (nativeInput) nativeInput.value = cat.color;
-
-  const nameInput = document.getElementById("catNameInput");
-  const isBuiltin = BUILTIN_CATS.some(b => b.id === cat.id);
-  if (nameInput) {
-    nameInput.value    = cat.name;
-    nameInput.readOnly = isBuiltin;
-    nameInput.style.opacity = isBuiltin ? "0.6" : "1";
-  }
-
-  const deleteBtn = document.getElementById("deleteCatBtn");
-  // Only show delete for custom (non-builtin) categories
-  if (deleteBtn) deleteBtn.style.display = isBuiltin ? "none" : "flex";
-
-  const emojiWrap = document.getElementById("emojiPickerWrap");
-  if (emojiWrap) emojiWrap.style.display = "none";
-
+  isNewCat=false; editingCatId=cat.id; editDomains=[...(cat.domains||[])]; originalDomains=[...(cat.domains||[])]; emojiPickerOpen=false; editColor=cat.color;
+  const title=document.getElementById("catEditorTitle"); if(title) title.textContent=`${cat.emoji} ${cat.name} — Edit`;
+  const ed=document.getElementById("catEmojiDisplay"); if(ed) ed.textContent=cat.emoji;
+  const cp=document.getElementById("colorPreview"); if(cp) cp.style.background=cat.color;
+  const hi=document.getElementById("colorHexInput"); if(hi) hi.value=cat.color;
+  const ni=document.getElementById("colorNativeInput"); if(ni) ni.value=cat.color;
+  const nm=document.getElementById("catNameInput");
+  const isBuiltin=BUILTIN_IDS.has(cat.id);
+  if(nm){ nm.value=cat.name; nm.readOnly=isBuiltin; nm.style.opacity=isBuiltin?"0.6":"1"; }
+  const db=document.getElementById("deleteCatBtn"); if(db) db.style.display=isBuiltin?"none":"flex";
+  const ew=document.getElementById("emojiPickerWrap"); if(ew) ew.style.display="none";
   renderDomainTags();
   document.getElementById("catEditorModal").classList.add("open");
 }
 
 function closeCatEditor() {
   document.getElementById("catEditorModal").classList.remove("open");
-  editingCatId = null; originalDomains = []; isNewCat = false;
+  editingCatId=null; originalDomains=[]; isNewCat=false;
 }
 
 async function deleteCatFromEditor() {
   if (!editingCatId) return;
-  const cat = userCategories.find(c => c.id === editingCatId);
-  if (!cat || !cat.isCustom) { toast("Cannot delete built-in categories","err"); return; }
+  const cat=userCategories.find(c=>c.id===editingCatId);
+  if (!cat||!cat.isCustom){ toast("Cannot delete built-in categories","err"); return; }
   if (!confirm(`Delete "${cat.name}"? All its domain mappings will be removed.`)) return;
 
-  // Delete all domain mappings from server
-  let hasError = false;
-  for (const domain of (cat.domains || [])) {
-    try {
-      await apiFetch(`${API}/categories/${encodeURIComponent(domain)}`, { method:"DELETE", headers:hdrs() });
-    } catch { hasError = true; }
+  try {
+    // Delete from MongoDB — server will also delete all domain mappings
+    const r=await apiFetch(`${API}/custom-categories/${encodeURIComponent(editingCatId)}`,{method:"DELETE",headers:hdrs()});
+    if (!r.ok) throw new Error("Server error");
+    toast(`"${cat.name}" deleted`);
+    await loadUserCategories();
+    renderStatCards();
+    renderFromStorage._forceChart=true;
+    renderFromStorage();
+    renderSettingsCatList();
+    closeCatEditor();
+    openSettings();
+  } catch(e) {
+    toast("Failed to delete: "+e.message,"err");
   }
-
-  // Remove from catCustomizations
-  delete catCustomizations[editingCatId];
-  await saveCatCustomizations();
-
-  if (!hasError) toast(`"${cat.name}" deleted`);
-  await loadCatCustomizations();
-  await loadUserCategories();
-  renderStatCards();
-  renderFromStorage._forceChart = true;
-  renderFromStorage();
-  renderSettingsCatList();
-  closeCatEditor();
-  openSettings();
 }
 
 function renderDomainTags() {
-  const wrap = document.getElementById("domainTags");
-  if (!wrap) return;
-  wrap.innerHTML = "";
-  editDomains.forEach(d => {
-    const tag = document.createElement("div");
-    tag.className = "domain-tag";
-    tag.innerHTML = `<span>${d}</span><button data-d="${d}" title="Remove">×</button>`;
-    tag.querySelector("button").addEventListener("click", () => {
-      editDomains = editDomains.filter(x => x !== d);
-      renderDomainTags();
-    });
+  const wrap=document.getElementById("domainTags"); if(!wrap) return;
+  wrap.innerHTML="";
+  editDomains.forEach(d=>{
+    const tag=document.createElement("div"); tag.className="domain-tag";
+    tag.innerHTML=`<span>${d}</span><button data-d="${d}" title="Remove">×</button>`;
+    tag.querySelector("button").addEventListener("click",()=>{ editDomains=editDomains.filter(x=>x!==d); renderDomainTags(); });
     wrap.appendChild(tag);
   });
 }
 
 function addDomainToEdit() {
-  const inp = document.getElementById("newDomainInput");
-  if (!inp) return;
-  let raw = inp.value.trim().toLowerCase();
-  if (!raw) return;
-  raw = raw.replace(/^https?:\/\//,"").replace(/^www\./,"").split("/")[0].split("?")[0];
-  if (!raw.includes(".")) { toast("Enter a valid domain (e.g. youtube.com)", "err"); return; }
-  if (!editDomains.includes(raw)) editDomains.push(raw);
-  inp.value = "";
-  renderDomainTags();
+  const inp=document.getElementById("newDomainInput"); if(!inp) return;
+  let raw=inp.value.trim().toLowerCase();
+  if(!raw) return;
+  raw=raw.replace(/^https?:\/\//,"").replace(/^www\./,"").split("/")[0].split("?")[0];
+  if(!raw.includes(".")){ toast("Enter a valid domain (e.g. youtube.com)","err"); return; }
+  if(!editDomains.includes(raw)) editDomains.push(raw);
+  inp.value=""; renderDomainTags();
 }
 
-/* FIX: saveCatEditor handles both NEW category creation and editing existing ones.
-   New categories are stored as catCustomizations with a generated ID.
-   Domains are saved to server as POST /categories {domain, category: newName}. */
+/* ─── SAVE CAT EDITOR — stores everything in MongoDB ─── */
 async function saveCatEditor() {
-  const emojiDisplay = document.getElementById("catEmojiDisplay");
-  const nameInput    = document.getElementById("catNameInput");
-  const currentEmoji = emojiDisplay?.textContent?.trim() || "📁";
-  const currentName  = nameInput?.value?.trim();
+  const emojiDisplay=document.getElementById("catEmojiDisplay");
+  const nameInput=document.getElementById("catNameInput");
+  const currentEmoji=emojiDisplay?.textContent?.trim()||"📁";
+  const currentName=nameInput?.value?.trim();
+  if(!currentName){ toast("Category name is required","err"); nameInput?.focus(); return; }
 
-  if (!currentName) { toast("Category name is required","err"); nameInput?.focus(); return; }
+  let catId=editingCatId;
+  const isBuiltin=BUILTIN_IDS.has(catId||"");
 
-  let catId = editingCatId;
-
-  if (isNewCat) {
-    // For new categories: use the name as the ID (server stores category as a string)
-    // Validate name isn't already taken
-    const taken = [...BUILTIN_CATS, ...userCategories].some(c => c.name.toLowerCase() === currentName.toLowerCase());
-    if (taken) { toast(`"${currentName}" already exists`,"err"); return; }
-    catId = currentName; // server uses category name as the value
+  if(isNewCat){
+    const taken=[...BUILTIN_CATS,...userCategories].some(c=>c.name.toLowerCase()===currentName.toLowerCase());
+    if(taken){ toast(`"${currentName}" already exists`,"err"); return; }
+    catId=currentName;
   }
 
-  const toAdd    = isNewCat ? editDomains : editDomains.filter(d => !originalDomains.includes(d));
-  const toRemove = isNewCat ? []          : originalDomains.filter(d => !editDomains.includes(d));
-  let hasError   = false;
+  let hasError=false;
 
-  // Save domain mappings to server
-  for (const domain of toAdd) {
-    try {
-      const r = await apiFetch(`${API}/categories`, {
-        method: "POST", headers: hdrs(),
-        body: JSON.stringify({ domain, category: catId })
+  // ── Step 1: Save category metadata to MongoDB (/custom-categories) ──
+  // This saves name/emoji/color for ALL categories (builtins too, as overrides)
+  // For builtins we save the override. For custom cats we save the full record.
+  try {
+    const r=await apiFetch(`${API}/custom-categories`,{
+      method:"POST", headers:hdrs(),
+      body:JSON.stringify({ catId, name:currentName, emoji:currentEmoji, color:editColor })
+    });
+    if(!r.ok){ const e=await r.json().catch(()=>{}); toast(`Failed to save category: ${e?.error||r.status}`,"err"); hasError=true; }
+  } catch { toast("Error saving category metadata","err"); hasError=true; }
+
+  // ── Step 2: Sync domain mappings to MongoDB (/categories) ──
+  // Now that server accepts any category string, custom cat domains work too
+  const toAdd    = isNewCat ? editDomains : editDomains.filter(d=>!originalDomains.includes(d));
+  const toRemove = isNewCat ? []          : originalDomains.filter(d=>!editDomains.includes(d));
+
+  for(const domain of toAdd){
+    try{
+      const r=await apiFetch(`${API}/categories`,{
+        method:"POST", headers:hdrs(),
+        body:JSON.stringify({domain, category:catId})
       });
-      if (!r.ok) { const e=await r.json().catch(()=>{}); toast(`Failed to add ${domain}: ${e?.error||r.status}`,"err"); hasError=true; }
+      if(!r.ok){ const e=await r.json().catch(()=>{}); toast(`Failed to add ${domain}: ${e?.error||r.status}`,"err"); hasError=true; }
     } catch { toast(`Error adding ${domain}`,"err"); hasError=true; }
   }
 
-  for (const domain of toRemove) {
-    try {
-      const r = await apiFetch(`${API}/categories/${encodeURIComponent(domain)}`, { method:"DELETE", headers:hdrs() });
-      if (!r.ok) { toast(`Failed to remove ${domain}`,"err"); hasError=true; }
+  for(const domain of toRemove){
+    try{
+      const r=await apiFetch(`${API}/categories/${encodeURIComponent(domain)}`,{method:"DELETE",headers:hdrs()});
+      if(!r.ok){ toast(`Failed to remove ${domain}`,"err"); hasError=true; }
     } catch { toast(`Error removing ${domain}`,"err"); hasError=true; }
   }
 
-  // Save color + emoji + name in catCustomizations (local storage)
-  catCustomizations[catId] = {
-    name:  currentName,
-    emoji: currentEmoji,
-    color: editColor,
-  };
-  await saveCatCustomizations();
+  if(!hasError) toast(isNewCat?`"${currentName}" created ✓`:"Category saved ✓");
 
-  if (!hasError) toast(isNewCat ? `"${currentName}" created ✓` : "Category saved ✓");
-
-  await loadCatCustomizations();
+  // ── Step 3: Reload everything from server ──
   await loadUserCategories();
   renderStatCards();
-  renderFromStorage._forceChart = true;
+  renderFromStorage._forceChart=true;
   renderFromStorage();
-  chrome.runtime.sendMessage({type:"SYNC_CATEGORIES"}, ()=>void chrome.runtime.lastError);
+  chrome.runtime.sendMessage({type:"SYNC_CATEGORIES"},()=>void chrome.runtime.lastError);
   renderSettingsCatList();
   closeCatEditor();
 }
 
 /* ─── EMOJI PICKER ─── */
-const EMOJI_SET = ["📚","💻","⚠️","📦","🎯","🚀","🎮","📱","🌐","🔬","🧪","📊","💡","🎨","✍️","🎵","🎬","🏋️","🧘","🍕","☕","🛒","💼","📰","🗓️","📬","🔧","⚙️","🏠","🚗","✈️"];
+const EMOJI_SET=["📚","💻","⚠️","📦","🎯","🚀","🎮","📱","🌐","🔬","🧪","📊","💡","🎨","✍️","🎵","🎬","🏋️","🧘","🍕","☕","🛒","💼","📰","🗓️","📬","🔧","⚙️","🏠","🚗","✈️"];
 
 function buildEmojiGrid() {
-  const grid = document.getElementById("emojiGrid");
-  if (!grid) return;
-  EMOJI_SET.forEach(em => {
-    const btn = document.createElement("button");
-    btn.textContent = em;
-    btn.addEventListener("click", () => {
-      const d = document.getElementById("catEmojiDisplay");
-      if (d) d.textContent = em;
-      const w = document.getElementById("emojiPickerWrap");
-      if (w) w.style.display = "none";
-      emojiPickerOpen = false;
+  const grid=document.getElementById("emojiGrid"); if(!grid) return;
+  EMOJI_SET.forEach(em=>{
+    const btn=document.createElement("button"); btn.textContent=em;
+    btn.addEventListener("click",()=>{
+      const d=document.getElementById("catEmojiDisplay"); if(d) d.textContent=em;
+      const w=document.getElementById("emojiPickerWrap"); if(w) w.style.display="none";
+      emojiPickerOpen=false;
     });
     grid.appendChild(btn);
   });
@@ -808,369 +607,308 @@ function buildEmojiGrid() {
 
 /* ─── SETTINGS CAT LIST ─── */
 function renderSettingsCatList() {
-  const ul = document.getElementById("settingsCatList");
-  if (!ul) return;
-  ul.innerHTML = "";
-  userCategories.forEach(cat => {
-    const isCustom = cat.isCustom || false;
-    const li = document.createElement("li");
-    li.className = "cat-list-item";
-    li.innerHTML = `
+  const ul=document.getElementById("settingsCatList"); if(!ul) return;
+  ul.innerHTML="";
+  userCategories.forEach(cat=>{
+    const isCustom=cat.isCustom||false;
+    const li=document.createElement("li"); li.className="cat-list-item";
+    li.innerHTML=`
       <span class="cat-icon">${cat.emoji}</span>
-      <div class="cat-meta">
-        <span class="cat-name">${cat.name}</span>
-        <span class="cat-domain-count">${cat.domains?.length||0} domain${(cat.domains?.length||0)===1?"":"s"}</span>
-      </div>
+      <div class="cat-meta"><span class="cat-name">${cat.name}</span><span class="cat-domain-count">${cat.domains?.length||0} domain${(cat.domains?.length||0)===1?"":"s"}</span></div>
       <div class="cat-color-dot" style="background:${cat.color};width:12px;height:12px;border-radius:50%;flex-shrink:0;"></div>
-      <span class="${isCustom ? 'cat-custom-badge' : 'cat-system-badge'}" style="font-size:10px;padding:2px 6px;border-radius:10px;background:${isCustom?'#e0e7ff':'#f1f5f9'};color:${isCustom?'#6366f1':'#64748b'};">${isCustom?"custom":"system"}</span>
-      <span class="cat-edit-arrow" style="color:var(--text-3,#9ca3af);font-size:18px;">›</span>
+      <span class="${isCustom?'cat-custom-badge':'cat-system-badge'}" style="font-size:10px;padding:2px 6px;border-radius:10px;background:${isCustom?'#e0e7ff':'#f1f5f9'};color:${isCustom?'#6366f1':'#64748b'};">${isCustom?"custom":"system"}</span>
+      <span class="cat-edit-arrow" style="color:var(--text-3);font-size:18px;">›</span>
     `;
-    li.style.cssText = "display:flex;align-items:center;gap:10px;padding:10px 4px;cursor:pointer;border-bottom:1px solid var(--border,#f1f5f9);";
-    li.addEventListener("click", () => { closeSettings(); openCatEditor(cat); });
+    li.style.cssText="display:flex;align-items:center;gap:10px;padding:10px 4px;cursor:pointer;border-bottom:1px solid var(--border);";
+    li.addEventListener("click",()=>{ closeSettings(); openCatEditor(cat); });
     ul.appendChild(li);
   });
 }
 
+/* ─── BLOCKED SITES ─── */
 async function loadBlockedSites() {
-  const list = document.getElementById("blockedSitesList");
-  if (!list) return;
-  list.innerHTML = `<li style="padding:10px 6px;color:var(--text-3);font-size:13px;">Loading…</li>`;
-  try {
-    const bsKey = getBlockedSitesKey(); // scoped per user
-    // Fetch from server and get focus status in parallel
-    const [bRes, fRes, localData] = await Promise.all([
-      apiFetch(`${API}/blocked-sites`, {headers:hdrs()}),
-      new Promise(res => chrome.runtime.sendMessage({type:"GET_FOCUS_STATUS"}, r=>{void chrome.runtime.lastError;res(r||{status:false});})),
-      // Load user-scoped locally cached blocked sites from chrome.storage
-      new Promise(res => chrome.storage.local.get([bsKey], d=>{ void chrome.runtime.lastError; res(d[bsKey]||[]); }))
+  const list=document.getElementById("blockedSitesList"); if(!list) return;
+  list.innerHTML=`<li class="blocked-loading"><span>Loading…</span></li>`;
+  try{
+    const bsKey=getBlockedSitesKey();
+    const [bRes,fRes,localData]=await Promise.all([
+      apiFetch(`${API}/blocked-sites`,{headers:hdrs()}),
+      new Promise(res=>chrome.runtime.sendMessage({type:"GET_FOCUS_STATUS"},r=>{void chrome.runtime.lastError;res(r||{status:false});})),
+      new Promise(res=>chrome.storage.local.get([bsKey],d=>{void chrome.runtime.lastError;res(d[bsKey]||[]);}))
     ]);
-
-    let serverSites = [];
-    if (bRes.ok) {
-      serverSites = await bRes.json();
-      if (!Array.isArray(serverSites)) serverSites = [];
-    }
-
-    // Merge server + local, deduplicate
-    const allSites = [...new Set([...serverSites, ...(Array.isArray(localData) ? localData : [])])].sort();
-    const focusOn  = fRes.status || false;
-
-    list.innerHTML = "";
-    if (!allSites.length) {
-      list.innerHTML = `<li style="padding:10px 6px;color:var(--text-3);font-size:14px;">No blocked sites yet</li>`;
-      return;
-    }
-    allSites.forEach(site => {
-      const li   = document.createElement("li");
-      // Ensure li is flex row so button stays inline and never overflows
-      li.style.cssText = "display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 6px;border-bottom:1px solid var(--border,#e5e7eb);min-width:0;";
-      const span = document.createElement("span");
-      span.textContent = site;
-      span.style.cssText = "flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;";
-      const btn  = document.createElement("button");
-      btn.className = "del-btn";
-      btn.textContent = "×";
-      btn.disabled = focusOn;
-      btn.style.cssText = "flex-shrink:0;width:24px;height:24px;display:flex;align-items:center;justify-content:center;border:none;background:var(--danger-bg,#fee2e2);color:var(--danger,#dc2626);border-radius:4px;cursor:pointer;font-size:16px;line-height:1;padding:0;";
-      btn.title = focusOn ? "Stop focus first" : `Remove ${site}`;
-      if (focusOn) btn.style.opacity = "0.4";
-      btn.addEventListener("click", () => delBlockedSite(site));
+    let serverSites=[];
+    if(bRes.ok){ serverSites=await bRes.json(); if(!Array.isArray(serverSites)) serverSites=[]; }
+    const allSites=[...new Set([...serverSites,...(Array.isArray(localData)?localData:[])])].sort();
+    const focusOn=fRes.status||false;
+    list.innerHTML="";
+    if(!allSites.length){ list.innerHTML=`<li class="blocked-empty"><span class="blocked-empty-icon">🌐</span><span>No blocked sites yet</span></li>`; return; }
+    allSites.forEach(site=>{
+      const li=document.createElement("li"); li.className="blocked-site-row";
+      const span=document.createElement("span"); span.className="blocked-site-name"; span.textContent=site;
+      const btn=document.createElement("button"); btn.className="blocked-del-btn";
+      btn.innerHTML=`<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`;
+      btn.disabled=focusOn; btn.title=focusOn?"Stop focus first":`Remove ${site}`;
+      if(focusOn) btn.style.opacity="0.35";
+      btn.addEventListener("click",()=>delBlockedSite(site));
       li.appendChild(span); li.appendChild(btn); list.appendChild(li);
     });
-  } catch (err) {
-    console.error("loadBlockedSites error:", err);
-    list.innerHTML = `<li style="padding:10px;color:#dc2626;font-size:13px;">Failed to load — check connection</li>`;
-  }
+  } catch(err){ console.error("loadBlockedSites:",err); list.innerHTML=`<li class="blocked-error"><span>Failed to load — check connection</span></li>`; }
 }
 
-function normSite(raw) {
-  let s = raw.trim().toLowerCase();
-  if (!s.startsWith("http://") && !s.startsWith("https://")) s = "https://" + s;
-  try { return new URL(s).hostname.replace(/^www\./,""); }
-  catch { return raw.trim().toLowerCase().replace(/^https?:\/\//,"").replace(/^www\./,"").split("/")[0].split("?")[0]; }
+function normSite(raw){
+  let s=raw.trim().toLowerCase();
+  if(!s.startsWith("http://")&&!s.startsWith("https://")) s="https://"+s;
+  try{ return new URL(s).hostname.replace(/^www\./,""); }
+  catch{ return raw.trim().toLowerCase().replace(/^https?:\/\//,"").replace(/^www\./,"").split("/")[0].split("?")[0]; }
 }
 
-async function delBlockedSite(site) {
-  const bsKey = getBlockedSitesKey(); // scoped per user
-  try {
-    // Remove from server
-    const r = await apiFetch(`${API}/blocked-sites/${encodeURIComponent(site)}`,{method:"DELETE",headers:hdrs()});
-    // Also remove from user-scoped local storage regardless of server result
-    await new Promise(resolve => {
-      chrome.storage.local.get([bsKey], d => {
+async function delBlockedSite(site){
+  const bsKey=getBlockedSitesKey();
+  try{
+    const r=await apiFetch(`${API}/blocked-sites/${encodeURIComponent(site)}`,{method:"DELETE",headers:hdrs()});
+    await new Promise(resolve=>{
+      chrome.storage.local.get([bsKey],d=>{
         void chrome.runtime.lastError;
-        const local = (d[bsKey] || []).filter(s => s !== site);
-        chrome.storage.local.set({ [bsKey]: local }, () => { void chrome.runtime.lastError; resolve(); });
+        const local=(d[bsKey]||[]).filter(s=>s!==site);
+        chrome.storage.local.set({[bsKey]:local},()=>{void chrome.runtime.lastError;resolve();});
       });
     });
-    if (!r.ok && r.status !== 404) throw new Error(`Server error ${r.status}`);
+    if(!r.ok&&r.status!==404) throw new Error(`Server error ${r.status}`);
     chrome.runtime.sendMessage({type:"REMOVE_BLOCK_SITE",site},()=>void chrome.runtime.lastError);
     toast(`${site} removed`); loadBlockedSites();
-  } catch (err) { toast(`Failed to remove: ${err.message}`,"err"); }
+  } catch(err){ toast(`Failed to remove: ${err.message}`,"err"); }
 }
 
-async function addBlockedSite() {
-  const inp = document.getElementById("blockSiteInput");
-  const btn = document.getElementById("addBlockSite");
-  const raw = inp?.value.trim();
-  if (!raw) { toast("Enter a domain","err"); return; }
-  const nd = normSite(raw);
-  if (!nd || !nd.includes(".")) { toast("Enter a valid domain","err"); return; }
+async function addBlockedSite(){
+  const inp=document.getElementById("blockSiteInput");
+  const btn=document.getElementById("addBlockSite");
+  const raw=inp?.value.trim();
+  if(!raw){ toast("Enter a domain","err"); return; }
+  const nd=normSite(raw);
+  if(!nd||!nd.includes(".")){ toast("Enter a valid domain","err"); return; }
   await loadAuthToken();
-  if (btn) { btn.disabled=true; btn.textContent="…"; }
-  const bsKey = getBlockedSitesKey(); // scoped per user
-  try {
-    // 1. Save to server
-    const r = await apiFetch(`${API}/blocked-sites`,{method:"POST",headers:hdrs(),body:JSON.stringify({site:nd})});
-    if (!r.ok) { const e=await r.json().catch(()=>{}); throw new Error(e?.error||`Error ${r.status}`); }
-
-    // 2. Save to user-scoped local storage (so it shows even offline)
-    await new Promise(resolve => {
-      chrome.storage.local.get([bsKey], d => {
+  if(btn){ btn.disabled=true; btn.textContent="…"; }
+  const bsKey=getBlockedSitesKey();
+  try{
+    const r=await apiFetch(`${API}/blocked-sites`,{method:"POST",headers:hdrs(),body:JSON.stringify({site:nd})});
+    if(!r.ok){ const e=await r.json().catch(()=>{}); throw new Error(e?.error||`Error ${r.status}`); }
+    await new Promise(resolve=>{
+      chrome.storage.local.get([bsKey],d=>{
         void chrome.runtime.lastError;
-        const local = d[bsKey] || [];
-        if (!local.includes(nd)) local.push(nd);
-        chrome.storage.local.set({ [bsKey]: local }, () => { void chrome.runtime.lastError; resolve(); });
+        const local=d[bsKey]||[];
+        if(!local.includes(nd)) local.push(nd);
+        chrome.storage.local.set({[bsKey]:local},()=>{void chrome.runtime.lastError;resolve();});
       });
     });
-
-    if (inp) inp.value="";
+    if(inp) inp.value="";
     toast(`${nd} blocked ✓`);
-
-    // 3. Tell background to refresh rules and reload any open blocked tabs
-    chrome.runtime.sendMessage({type:"ADD_BLOCK_SITE", site:nd}, () => void chrome.runtime.lastError);
+    chrome.runtime.sendMessage({type:"ADD_BLOCK_SITE",site:nd},()=>void chrome.runtime.lastError);
     loadBlockedSites();
-  } catch(e) { toast(e.message||"Failed","err"); }
-  finally { if (btn) { btn.disabled=false; btn.textContent="Block"; } }
+  } catch(e){ toast(e.message||"Failed","err"); }
+  finally{ if(btn){ btn.disabled=false; btn.textContent="Block"; } }
 }
 
 /* ─── FOCUS ─── */
-function updateFocusUI(on, locked) {
-  document.getElementById("statusDot")?.classList.toggle("on", on);
-  const lbl = document.getElementById("focusLabel");
-  if (lbl) lbl.textContent = locked ? "Hard Focus — Locked" : on ? "On" : "Off";
-  const startBtn = document.getElementById("startFocus");
-  const hardBtn  = document.getElementById("hardFocus");
-  const stopBtn  = document.getElementById("stopFocus");
-  if (startBtn) startBtn.disabled = on;
-  if (hardBtn)  hardBtn.disabled  = on;
-  if (stopBtn)  stopBtn.disabled  = !on || locked;
+function updateFocusUI(on,locked){
+  document.getElementById("statusDot")?.classList.toggle("on",on);
+  const lbl=document.getElementById("focusLabel");
+  if(lbl) lbl.textContent=locked?"Hard Focus — Locked":on?"On":"Off";
+  const s=document.getElementById("startFocus"),h=document.getElementById("hardFocus"),x=document.getElementById("stopFocus");
+  if(s) s.disabled=on; if(h) h.disabled=on; if(x) x.disabled=!on||locked;
 }
 
-function reloadCurrentIfBlocked() {
-  const bsKey = getBlockedSitesKey(); // scoped per user
-  // Check both server and user-scoped local blocked lists, reload ALL open blocked tabs
+function reloadCurrentIfBlocked(){
+  const bsKey=getBlockedSitesKey();
   Promise.all([
     apiFetch(`${API}/blocked-sites`,{headers:hdrs()}).then(r=>r.json()).catch(()=>[]),
     new Promise(r=>chrome.storage.local.get([bsKey],d=>{void chrome.runtime.lastError;r(d[bsKey]||[]);}))
-  ]).then(([serverSites, localSites]) => {
-    const blocked = [...new Set([...serverSites, ...localSites])];
-    if (!blocked.length) return;
-    chrome.tabs.query({windowType:"normal"}, tabs=>{
-      void chrome.runtime.lastError;
-      if (!tabs?.length) return;
-      tabs.forEach(tab => {
-        if (!tab?.url) return;
-        try {
-          const host = new URL(tab.url).hostname.replace(/^www\./,"");
-          if (blocked.some(s=>host===s||host.endsWith("."+s))) chrome.tabs.reload(tab.id);
-        } catch {}
+  ]).then(([ss,ls])=>{
+    const blocked=[...new Set([...ss,...ls])];
+    if(!blocked.length) return;
+    chrome.tabs.query({windowType:"normal"},tabs=>{
+      void chrome.runtime.lastError; if(!tabs?.length) return;
+      tabs.forEach(tab=>{
+        if(!tab?.url) return;
+        try{ const h=new URL(tab.url).hostname.replace(/^www\./,""); if(blocked.some(s=>h===s||h.endsWith("."+s))) chrome.tabs.reload(tab.id); }catch{}
       });
     });
   }).catch(()=>{});
 }
 
-function initFocusControls() {
+function initFocusControls(){
   document.getElementById("startFocus")?.addEventListener("click",()=>{
-    chrome.runtime.sendMessage({type:"FOCUS_ON",duration:25,hard:false}, res=>{
+    chrome.runtime.sendMessage({type:"FOCUS_ON",duration:25,hard:false},res=>{
       void chrome.runtime.lastError;
-      if (res?.success) { toast("Focus on — 25 min"); updateFocusUI(true,false); reloadCurrentIfBlocked(); }
+      if(res?.success){toast("Focus on — 25 min");updateFocusUI(true,false);reloadCurrentIfBlocked();}
       else toast(res?.error||"Could not start","err");
     });
   });
   document.getElementById("hardFocus")?.addEventListener("click",()=>{
-    const m = parseInt(prompt("Hard Focus duration (min, min 5):","25"),10);
-    if (!m||m<5) { toast("Min 5 minutes","err"); return; }
-    chrome.runtime.sendMessage({type:"FOCUS_ON",duration:m,hard:true}, res=>{
+    const m=parseInt(prompt("Hard Focus duration (min, min 5):","25"),10);
+    if(!m||m<5){toast("Min 5 minutes","err");return;}
+    chrome.runtime.sendMessage({type:"FOCUS_ON",duration:m,hard:true},res=>{
       void chrome.runtime.lastError;
-      if (res?.success) { toast(`Hard focus — ${m} min, locked`); updateFocusUI(true,true); reloadCurrentIfBlocked(); }
+      if(res?.success){toast(`Hard focus — ${m} min, locked`);updateFocusUI(true,true);reloadCurrentIfBlocked();}
       else toast(res?.error||"Could not start","err");
     });
   });
   document.getElementById("stopFocus")?.addEventListener("click",()=>{
-    chrome.runtime.sendMessage({type:"FOCUS_OFF"}, res=>{
+    chrome.runtime.sendMessage({type:"FOCUS_OFF"},res=>{
       void chrome.runtime.lastError;
-      if (res?.success) { toast("Focus off"); updateFocusUI(false,false); }
+      if(res?.success){toast("Focus off");updateFocusUI(false,false);}
       else toast(res?.error||"Could not stop","err");
     });
   });
-  chrome.runtime.sendMessage({type:"GET_FOCUS_STATUS"}, res=>{
-    void chrome.runtime.lastError;
-    if (res) updateFocusUI(res.status, res.locked);
-  });
+  chrome.runtime.sendMessage({type:"GET_FOCUS_STATUS"},res=>{void chrome.runtime.lastError;if(res)updateFocusUI(res.status,res.locked);});
 }
 
 /* ─── REFLECTION ─── */
-async function loadReflection() {
-  try {
-    const r = await apiFetch(`${API}/reflections/${getTodayKey()}`,{headers:hdrs()});
-    if (!r.ok) return;
-    const d = await r.json();
-    if (d?.date) {
-      const f = id => document.getElementById(id);
-      if (f("reflectionDistractions")) f("reflectionDistractions").value = d.distractions||"";
-      if (f("reflectionWentWell"))     f("reflectionWentWell").value     = d.wentWell||"";
-      if (f("reflectionImprovements")) f("reflectionImprovements").value = d.improvements||"";
+async function loadReflection(){
+  try{
+    const r=await apiFetch(`${API}/reflections/${getTodayKey()}`,{headers:hdrs()});
+    if(!r.ok) return;
+    const d=await r.json();
+    if(d?.date){
+      const f=id=>document.getElementById(id);
+      if(f("reflectionDistractions")) f("reflectionDistractions").value=d.distractions||"";
+      if(f("reflectionWentWell"))     f("reflectionWentWell").value=d.wentWell||"";
+      if(f("reflectionImprovements")) f("reflectionImprovements").value=d.improvements||"";
     }
-  } catch {}
+  }catch{}
 }
 
-async function saveReflection() {
-  try {
-    const r = await apiFetch(`${API}/reflections`,{
+async function saveReflection(){
+  try{
+    const r=await apiFetch(`${API}/reflections`,{
       method:"POST",headers:hdrs(),
       body:JSON.stringify({
-        date: getTodayKey(),
-        distractions: document.getElementById("reflectionDistractions")?.value,
-        wentWell:     document.getElementById("reflectionWentWell")?.value,
-        improvements: document.getElementById("reflectionImprovements")?.value,
+        date:getTodayKey(),
+        distractions:document.getElementById("reflectionDistractions")?.value,
+        wentWell:document.getElementById("reflectionWentWell")?.value,
+        improvements:document.getElementById("reflectionImprovements")?.value,
       })
     });
-    if (!r.ok) throw new Error();
-    const chip = document.getElementById("reflectionSaved");
-    if (chip) { chip.style.display="block"; setTimeout(()=>chip.style.display="none",3000); }
+    if(!r.ok) throw new Error();
+    const chip=document.getElementById("reflectionSaved");
+    if(chip){chip.style.display="block";setTimeout(()=>chip.style.display="none",3000);}
     toast("Reflection saved");
-  } catch { toast("Failed to save","err"); }
+  }catch{toast("Failed to save","err");}
 }
 
 /* ─── WEEKLY ─── */
-async function loadWeeklySummary() {
-  const today=new Date(), wago=new Date(today);
+async function loadWeeklySummary(){
+  const today=new Date(),wago=new Date(today);
   wago.setDate(wago.getDate()-7);
-  try {
-    const r = await apiFetch(`${API}/reflections?startDate=${wago.toISOString().split("T")[0]}&endDate=${today.toISOString().split("T")[0]}`,{headers:hdrs()});
-    allWeeklyData = r.ok ? await r.json() : [];
+  try{
+    const r=await apiFetch(`${API}/reflections?startDate=${wago.toISOString().split("T")[0]}&endDate=${today.toISOString().split("T")[0]}`,{headers:hdrs()});
+    allWeeklyData=r.ok?await r.json():[];
     renderWeekly();
-  } catch { const el=document.getElementById("weeklySummary"); if(el) el.innerHTML=`<p class="empty-text">Could not load</p>`; }
+  }catch{const el=document.getElementById("weeklySummary");if(el)el.innerHTML=`<p class="empty-text">Could not load</p>`;}
 }
 
-function renderWeekly() {
-  const cont=document.getElementById("weeklySummary");
-  const allBox=document.getElementById("summaryAll");
-  const btn=document.getElementById("showAllBtn");
-  if (!cont) return;
-  if (!allWeeklyData.length) { cont.innerHTML=`<p class="empty-text">No reflections yet</p>`; if(btn) btn.style.display="none"; return; }
+function renderWeekly(){
+  const cont=document.getElementById("weeklySummary"),allBox=document.getElementById("summaryAll"),btn=document.getElementById("showAllBtn");
+  if(!cont) return;
+  if(!allWeeklyData.length){cont.innerHTML=`<p class="empty-text">No reflections yet</p>`;if(btn)btn.style.display="none";return;}
   cont.innerHTML="";
-  const entries=document.createElement("div"); entries.className="summary-entries";
+  const entries=document.createElement("div");entries.className="summary-entries";
   [allWeeklyData[0]].forEach(r=>entries.appendChild(makeSummaryEl(r)));
   cont.appendChild(entries);
-  if (!btn) return;
-  if (allWeeklyData.length<=1) { btn.style.display="none"; return; }
+  if(!btn)return;
+  if(allWeeklyData.length<=1){btn.style.display="none";return;}
   btn.style.display="block";
-  btn.textContent = showingAll ? "Show less" : `Show all ${allWeeklyData.length} entries`;
-  if (allBox) {
-    allBox.innerHTML="";
-    if (showingAll) { allWeeklyData.slice(1).forEach(r=>allBox.appendChild(makeSummaryEl(r))); allBox.classList.add("open"); }
-    else allBox.classList.remove("open");
-  }
+  btn.textContent=showingAll?"Show less":`Show all ${allWeeklyData.length} entries`;
+  if(allBox){allBox.innerHTML="";if(showingAll){allWeeklyData.slice(1).forEach(r=>allBox.appendChild(makeSummaryEl(r)));allBox.classList.add("open");}else allBox.classList.remove("open");}
 }
 
-function makeSummaryEl(ref) {
-  const item=document.createElement("div"); item.className="summary-item";
-  const date=document.createElement("div"); date.className="summary-date";
+function makeSummaryEl(ref){
+  const item=document.createElement("div");item.className="summary-item";
+  const date=document.createElement("div");date.className="summary-date";
   date.textContent=new Date(ref.date+"T00:00:00").toLocaleDateString("en-US",{weekday:"short",month:"short",day:"numeric"});
-  const text=document.createElement("div"); text.className="summary-text";
+  const text=document.createElement("div");text.className="summary-text";
   const parts=[];
-  if (ref.wentWell) parts.push(`+ ${ref.wentWell.slice(0,90)}${ref.wentWell.length>90?"…":""}`);
-  if (ref.distractions) parts.push(`- ${ref.distractions.slice(0,70)}${ref.distractions.length>70?"…":""}`);
+  if(ref.wentWell) parts.push(`+ ${ref.wentWell.slice(0,90)}${ref.wentWell.length>90?"…":""}`);
+  if(ref.distractions) parts.push(`- ${ref.distractions.slice(0,70)}${ref.distractions.length>70?"…":""}`);
   text.textContent=parts.join(" · ");
-  item.appendChild(date); item.appendChild(text);
+  item.appendChild(date);item.appendChild(text);
   return item;
 }
 
 /* ─── EXPORT ─── */
-function dl(content,name,type) {
+function dl(content,name,type){
   const a=document.createElement("a");
   a.href=URL.createObjectURL(new Blob([content],{type}));
-  a.download=name; a.click(); URL.revokeObjectURL(a.href);
+  a.download=name;a.click();URL.revokeObjectURL(a.href);
 }
 
 /* ─── MODALS ─── */
-function openSettings() { renderSettingsCatList(); document.getElementById("settingsModal").classList.add("open"); }
-function closeSettings() { document.getElementById("settingsModal").classList.remove("open"); }
+function openSettings(){renderSettingsCatList();document.getElementById("settingsModal").classList.add("open");}
+function closeSettings(){document.getElementById("settingsModal").classList.remove("open");}
 
 /* ─── TOAST ─── */
-function toast(msg, type="ok") {
-  const c=document.getElementById("toastContainer");
-  if (!c) return;
-  const t=document.createElement("div"); t.className=`toast ${type}`; t.textContent=msg;
+function toast(msg,type="ok"){
+  const c=document.getElementById("toastContainer"); if(!c) return;
+  const t=document.createElement("div");t.className=`toast ${type}`;t.textContent=msg;
   c.appendChild(t);
-  setTimeout(()=>{ t.style.opacity="0"; t.style.transition="opacity .3s"; setTimeout(()=>t.remove(),350); },2800);
+  setTimeout(()=>{t.style.opacity="0";t.style.transition="opacity .3s";setTimeout(()=>t.remove(),350);},2800);
 }
 
 /* ─── UTILS ─── */
-function fmt(ms) {
-  if (!ms||ms<=0) return "0 sec";
+function fmt(ms){
+  if(!ms||ms<=0) return"0 sec";
   const s=Math.floor(ms/1000),m=Math.floor(s/60),h=Math.floor(m/60);
-  if (h>0) return `${h}h ${m%60}m`; if (m>0) return `${m} min`; return `${s} sec`;
+  if(h>0)return`${h}h ${m%60}m`;if(m>0)return`${m} min`;return`${s} sec`;
 }
 
 /* ─── EVENTS ─── */
-function initEventListeners() {
-  document.getElementById("settingsBtn")?.addEventListener("click", openSettings);
-  document.getElementById("refreshBtn")?.addEventListener("click",  ()=>location.reload());
-  document.getElementById("closeSettings")?.addEventListener("click", closeSettings);
-  document.getElementById("settingsModal")?.addEventListener("click", e=>{ if(e.target===document.getElementById("settingsModal")) closeSettings(); });
-  document.getElementById("saveSettingsBtn")?.addEventListener("click", saveSettings);
-  document.getElementById("logoutBtn")?.addEventListener("click", logout);
-  document.getElementById("themeSelect")?.addEventListener("change", e=>applyTheme(e.target.value, currentAccent));
+function initEventListeners(){
+  document.getElementById("settingsBtn")?.addEventListener("click",openSettings);
+  document.getElementById("refreshBtn")?.addEventListener("click",()=>location.reload());
+  document.getElementById("closeSettings")?.addEventListener("click",closeSettings);
+  document.getElementById("settingsModal")?.addEventListener("click",e=>{if(e.target===document.getElementById("settingsModal"))closeSettings();});
+  document.getElementById("saveSettingsBtn")?.addEventListener("click",saveSettings);
+  document.getElementById("logoutBtn")?.addEventListener("click",logout);
+  document.getElementById("themeSelect")?.addEventListener("change",e=>applyTheme(e.target.value,currentAccent));
   document.querySelectorAll(".swatch").forEach(b=>b.addEventListener("click",()=>applyTheme(currentTheme,b.dataset.color)));
-
-  // ── ADD CATEGORY button in settings ──
-  document.getElementById("addCatBtn")?.addEventListener("click", () => {
-    closeSettings();
-    openNewCatEditor();
-  });
-
-  document.getElementById("closeCatEditor")?.addEventListener("click", closeCatEditor);
-  document.getElementById("catEditorModal")?.addEventListener("click", e=>{ if(e.target===document.getElementById("catEditorModal")) closeCatEditor(); });
-  document.getElementById("cancelCatEditor")?.addEventListener("click", closeCatEditor);
-  document.getElementById("saveCatBtn")?.addEventListener("click", saveCatEditor);
-  document.getElementById("deleteCatBtn")?.addEventListener("click", deleteCatFromEditor);
+  document.getElementById("addCatBtn")?.addEventListener("click",()=>{closeSettings();openNewCatEditor();});
+  document.getElementById("closeCatEditor")?.addEventListener("click",closeCatEditor);
+  document.getElementById("catEditorModal")?.addEventListener("click",e=>{if(e.target===document.getElementById("catEditorModal"))closeCatEditor();});
+  document.getElementById("cancelCatEditor")?.addEventListener("click",closeCatEditor);
+  document.getElementById("saveCatBtn")?.addEventListener("click",saveCatEditor);
+  document.getElementById("deleteCatBtn")?.addEventListener("click",deleteCatFromEditor);
   document.getElementById("emojiPickerBtn")?.addEventListener("click",()=>{
     emojiPickerOpen=!emojiPickerOpen;
-    const w=document.getElementById("emojiPickerWrap"); if(w) w.style.display=emojiPickerOpen?"block":"none";
+    const w=document.getElementById("emojiPickerWrap");if(w)w.style.display=emojiPickerOpen?"block":"none";
   });
-  document.getElementById("addDomainBtn")?.addEventListener("click", addDomainToEdit);
-  document.getElementById("newDomainInput")?.addEventListener("keypress", e=>{ if(e.key==="Enter") addDomainToEdit(); });
-  document.getElementById("colorNativeInput")?.addEventListener("input", e=>{
-    editColor = e.target.value;
-    const h=document.getElementById("colorHexInput"); if(h) h.value=editColor;
-    const p=document.getElementById("colorPreview"); if(p) p.style.background=editColor;
+  document.getElementById("addDomainBtn")?.addEventListener("click",addDomainToEdit);
+  document.getElementById("newDomainInput")?.addEventListener("keypress",e=>{if(e.key==="Enter")addDomainToEdit();});
+  document.getElementById("colorNativeInput")?.addEventListener("input",e=>{
+    editColor=e.target.value;
+    const h=document.getElementById("colorHexInput");if(h)h.value=editColor;
+    const p=document.getElementById("colorPreview");if(p)p.style.background=editColor;
   });
-  document.getElementById("colorHexInput")?.addEventListener("input", e=>{
+  document.getElementById("colorHexInput")?.addEventListener("input",e=>{
     const v=e.target.value.trim();
-    if (/^#[0-9a-fA-F]{6}$/.test(v)) {
-      editColor = v;
-      const n=document.getElementById("colorNativeInput"); if(n) n.value=v;
-      const p=document.getElementById("colorPreview"); if(p) p.style.background=v;
+    if(/^#[0-9a-fA-F]{6}$/.test(v)){
+      editColor=v;
+      const n=document.getElementById("colorNativeInput");if(n)n.value=v;
+      const p=document.getElementById("colorPreview");if(p)p.style.background=v;
     }
   });
-
-  document.getElementById("addBlockSite")?.addEventListener("click", addBlockedSite);
-  document.getElementById("blockSiteInput")?.addEventListener("keypress",e=>{ if(e.key==="Enter") addBlockedSite(); });
-  document.getElementById("saveReflection")?.addEventListener("click", saveReflection);
-  document.getElementById("rangeSelect")?.addEventListener("change", ()=>{ _lastChartRender=0; renderFromStorage(); });
-  document.getElementById("showAllBtn")?.addEventListener("click",()=>{ showingAll=!showingAll; renderWeekly(); });
+  document.getElementById("addBlockSite")?.addEventListener("click",addBlockedSite);
+  document.getElementById("blockSiteInput")?.addEventListener("keypress",e=>{if(e.key==="Enter")addBlockedSite();});
+  document.getElementById("saveReflection")?.addEventListener("click",saveReflection);
+  document.getElementById("rangeSelect")?.addEventListener("change",()=>{_lastChartRender=0;renderFromStorage();});
+  document.getElementById("showAllBtn")?.addEventListener("click",()=>{showingAll=!showingAll;renderWeekly();});
   document.getElementById("exportJsonBtn")?.addEventListener("click",()=>{
-    const key = getTimeDataKey(); // scoped per user
+    const key=getTimeDataKey();
     chrome.storage.local.get([key],res=>dl(JSON.stringify(res[key]||{},null,2),`focus-${getTodayKey()}.json`,"application/json"));
   });
   document.getElementById("exportCsvBtn")?.addEventListener("click",()=>{
-    const key = getTimeDataKey(); // scoped per user
+    const key=getTimeDataKey();
     chrome.storage.local.get([key],res=>{
-      const d=res[key]||{}; let csv="Date,Website,Category,Time(ms),Time(min)\n";
-      for(const date in d) for(const site in d[date]){
+      const d=res[key]||{};let csv="Date,Website,Category,Time(ms),Time(min)\n";
+      for(const date in d)for(const site in d[date]){
         const e=d[date][site],ms=typeof e==="number"?e:(e.time||0),cat=typeof e==="object"?(e.category||"Other"):"Other";
         csv+=`${date},${site},${cat},${ms},${(ms/60000).toFixed(1)}\n`;
       }
@@ -1179,9 +917,7 @@ function initEventListeners() {
   });
   chrome.storage.onChanged.addListener((changes,area)=>{
     if(area==="local"&&(changes.focusMode||changes.focusLockUntil)){
-      chrome.runtime.sendMessage({type:"GET_FOCUS_STATUS"},res=>{
-        void chrome.runtime.lastError; if(res) updateFocusUI(res.status,res.locked);
-      });
+      chrome.runtime.sendMessage({type:"GET_FOCUS_STATUS"},res=>{void chrome.runtime.lastError;if(res)updateFocusUI(res.status,res.locked);});
       loadBlockedSites();
     }
   });
