@@ -77,10 +77,13 @@ app.use(cors({
 app.use(express.json({ limit: "10kb" }));
 
 import { fileURLToPath } from 'url';
-import { dirname, join } from 'path';
+import { dirname } from 'path';
+import path from 'path';
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
-app.use(express.static(join(__dirname, 'public')));
+
+app.use(express.static(path.join(__dirname, 'public')));
 
 
 // ─────────────────────────────────────────────
@@ -385,7 +388,7 @@ async function sendPasswordResetEmail(email, otp, userId) {
   }
 
   const resetPageBase = process.env.RESET_PAGE_URL || BASE_URL;
-  const resetUrl = `${resetPageBase}/reset-password.html`
+  const resetUrl = `${resetPageBase}/reset-password`
     + `?otp=${encodeURIComponent(otp)}`
     + `&email=${encodeURIComponent(email)}`
     + `&theme=${encodeURIComponent(theme)}`
@@ -658,7 +661,7 @@ app.post("/auth/signup", async (req, res) => {
 
     await ensurePreferences(user._id);
 
-    if (transporter) {
+    if (brevo) {
       sendVerificationEmail(email, verifyToken).catch(e =>
         console.error("Verification email failed:", e.message)
       );
@@ -673,7 +676,7 @@ app.post("/auth/signup", async (req, res) => {
       success: true,
       token,
       user: { email: user.email, name: user.displayName, isVerified: user.isVerified },
-      message: transporter
+      message: brevo
         ? "Account created! Check your email to verify."
         : "Account created successfully!",
     });
